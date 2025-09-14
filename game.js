@@ -834,7 +834,19 @@ class Enemy {
         // Flyers/fish use time-based animation; walkers use distance-based
         if (this.isFlying || this.isFish) {
             this.animTimer += deltaTime;
-            if (this.animTimer > 150) {
+            // Different animation speeds for different flying enemies to make them unique
+            let animSpeed = 150; // Default for fish
+            if (this.isFlying) {
+                const flyingAnimSpeeds = {
+                    'brownBat': 100,      // Fast flapping
+                    'purpleBat': 110,     // Slightly slower
+                    'angryBird': 90,      // Very fast flapping
+                    'greenBird': 120      // Moderate flapping
+                };
+                animSpeed = flyingAnimSpeeds[this.type] || 110;
+            }
+
+            if (this.animTimer > animSpeed) {
                 this.animTimer = 0;
                 if (arr && arr.length > 0) {
                     this.animFrame = (this.animFrame + 1) % arr.length;
@@ -1372,15 +1384,8 @@ const levelConfigs = {
         ],
         boss: {x: 2200, y: 300, type: 'angryBird', health: 5, name: 'Sky Guardian'},
         water: [
-            // Large water body at bottom for swimming with gaps for platforms
-            {x: 0, y: 576, w: 200, h: 400}, // Under first platform
-            {x: 300, y: 576, w: 100, h: 400}, // Gap between platforms
-            {x: 500, y: 576, w: 100, h: 400},
-            {x: 700, y: 576, w: 200, h: 400},
-            {x: 1100, y: 576, w: 100, h: 400},
-            {x: 1300, y: 576, w: 200, h: 400},
-            {x: 1700, y: 576, w: 100, h: 400},
-            {x: 2000, y: 576, w: 500, h: 400} // Under boss area
+            // One continuous water body spanning the entire level bottom
+            {x: 0, y: 576, w: 2500, h: 400} // Continuous water under all platforms
         ]
     },
     2: {
