@@ -3,6 +3,37 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
+// Handle canvas resizing for mobile
+function resizeCanvas() {
+    const container = document.getElementById('gameContainer');
+    const maxWidth = window.innerWidth;
+    const maxHeight = window.innerHeight - 100; // Leave space for controls
+
+    if (window.innerWidth <= 768) {
+        // Mobile view
+        const aspectRatio = 1024 / 576;
+        let width = maxWidth;
+        let height = width / aspectRatio;
+
+        if (height > maxHeight) {
+            height = maxHeight;
+            width = height * aspectRatio;
+        }
+
+        canvas.style.width = width + 'px';
+        canvas.style.height = height + 'px';
+    } else {
+        // Desktop view
+        canvas.style.width = '';
+        canvas.style.height = '';
+    }
+}
+
+// Set up resize listener
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', resizeCanvas);
+resizeCanvas();
+
 // Game constants
 const GRAVITY = 0.4;
 const JUMP_FORCE = -10;
@@ -15,6 +46,112 @@ let gameState = 'loading';
 let score = 0;
 let level = 1;
 let camera = { x: 0, y: 0 };
+
+// Audio Manager
+class AudioManager {
+    constructor() {
+        this.sounds = {};
+        this.currentMusic = null;
+        this.isMuted = false;
+        this.loadSounds();
+    }
+
+    loadSounds() {
+        // Background music
+        this.sounds.bgMusic = new Audio('Music/BackgroundMusic/bgmusic.mp3');
+        this.sounds.bgMusic.loop = true;
+        this.sounds.bgMusic.volume = 0.3;
+
+        // Swimming music
+        this.sounds.swimmingMusic = new Audio('Music/SwimmingMusic/swimming.mp3');
+        this.sounds.swimmingMusic.loop = true;
+        this.sounds.swimmingMusic.volume = 0.3;
+
+        // Sound effects
+        this.sounds.jump = new Audio('Music/JumpMusic/jump.mp3');
+        this.sounds.jump.volume = 0.5;
+
+        this.sounds.death = new Audio('Music/DeadMusic/Dead.mp3');
+        this.sounds.death.volume = 0.5;
+
+        this.sounds.enemyKilled = new Audio('Music/StompingEnemies/Killed.mp3');
+        this.sounds.enemyKilled.volume = 0.6;
+
+        // Preload all sounds
+        Object.values(this.sounds).forEach(sound => {
+            sound.load();
+        });
+    }
+
+    playBackgroundMusic() {
+        if (this.currentMusic !== this.sounds.bgMusic) {
+            this.stopAllMusic();
+            this.currentMusic = this.sounds.bgMusic;
+            if (!this.isMuted) {
+                this.sounds.bgMusic.play().catch(e => {
+                    console.log('Background music autoplay blocked, will play on user interaction');
+                });
+            }
+        }
+    }
+
+    playSwimmingMusic() {
+        if (this.currentMusic !== this.sounds.swimmingMusic) {
+            this.stopAllMusic();
+            this.currentMusic = this.sounds.swimmingMusic;
+            if (!this.isMuted) {
+                this.sounds.swimmingMusic.play().catch(e => {
+                    console.log('Swimming music play failed');
+                });
+            }
+        }
+    }
+
+    stopAllMusic() {
+        if (this.currentMusic) {
+            this.currentMusic.pause();
+            this.currentMusic.currentTime = 0;
+            this.currentMusic = null;
+        }
+    }
+
+    playJump() {
+        if (!this.isMuted) {
+            // Clone and play to allow overlapping sounds
+            const jumpSound = this.sounds.jump.cloneNode();
+            jumpSound.volume = 0.5;
+            jumpSound.play().catch(e => {});
+        }
+    }
+
+    playDeath() {
+        this.stopAllMusic();
+        if (!this.isMuted) {
+            this.sounds.death.play().catch(e => {});
+        }
+    }
+
+    playEnemyKilled() {
+        if (!this.isMuted) {
+            // Clone and play to allow overlapping sounds
+            const killedSound = this.sounds.enemyKilled.cloneNode();
+            killedSound.volume = 0.6;
+            killedSound.play().catch(e => {});
+        }
+    }
+
+    toggleMute() {
+        this.isMuted = !this.isMuted;
+        if (this.isMuted) {
+            this.stopAllMusic();
+        } else if (gameState === 'playing') {
+            this.playBackgroundMusic();
+        }
+    }
+}
+
+// Initialize audio manager
+const audioManager = new AudioManager();
 
 // Reorganized sprite collections
 const sprites = {
@@ -304,6 +441,7 @@ class Player {
         this.inWater = false;
         this.swimTimer = 0;
         this.isFlying = false;
+        this.jumpSoundCooldown = 0;
         this.flyingTimer = 0;
         this.animDir = 1; // for ping-pong walking
         this._loggedWalkReady = false; // debug: log once when walk sprites are active
@@ -322,6 +460,11 @@ class Player {
             if (this.invulnerableTime <= 0) {
                 this.invulnerable = false;
             }
+        }
+
+        // Handle jump sound cooldown
+        if (this.jumpSoundCooldown > 0) {
+            this.jumpSoundCooldown -= deltaTime;
         }
         
         // Apply gravity and water physics
@@ -387,6 +530,7 @@ class Player {
                 this.walkPhase = 0;
             }
         }
+
         
         // Update animation AFTER the state has been determined
         this.animTimer += deltaTime;
@@ -458,10 +602,20 @@ class Player {
         if (this.grounded) {
             this.vy = JUMP_FORCE;
             this.grounded = false;
+            // Always play sound for ground jumps
+            if (this.jumpSoundCooldown <= 0) {
+                audioManager.playJump();
+                this.jumpSoundCooldown = 100; // 100ms cooldown
+            }
         } else if (this.inWater) {
             // Swimming upward - more responsive
             this.vy -= 2;
             if (this.vy < -6) this.vy = -6;
+            // Only play sound if not on cooldown for swimming
+            if (this.jumpSoundCooldown <= 0) {
+                audioManager.playJump();
+                this.jumpSoundCooldown = 300; // 300ms cooldown for swimming sounds
+            }
         }
     }
     
@@ -996,6 +1150,7 @@ function initGame() {
     
     // Start game loop
     gameState = 'playing';
+    audioManager.playBackgroundMusic();
     lastTime = performance.now();
     gameLoop();
 }
@@ -1155,6 +1310,7 @@ function handleCollisions() {
             if (player.vy > 0 && player.y < enemy.y) {
                 player.vy = JUMP_FORCE / 2;
                 score += 100;
+                audioManager.playEnemyKilled();
                 createParticles(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#ff0000', 15);
                 enemies.splice(index, 1);
             } else {
@@ -1226,7 +1382,7 @@ const keys = {};
 
 document.addEventListener('keydown', (e) => {
     keys[e.key] = true;
-    
+
     if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w') {
         e.preventDefault();
     }
@@ -1235,6 +1391,146 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('keyup', (e) => {
     keys[e.key] = false;
 });
+
+// Mobile controls
+function setupMobileControls() {
+    const leftBtn = document.getElementById('leftBtn');
+    const rightBtn = document.getElementById('rightBtn');
+    const jumpBtn = document.getElementById('jumpBtn');
+    const muteBtn = document.getElementById('muteBtn');
+
+    if (!leftBtn || !rightBtn || !jumpBtn) return;
+
+    // Prevent default touch behaviors
+    const preventDefaults = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    // Left button
+    leftBtn.addEventListener('touchstart', (e) => {
+        preventDefaults(e);
+        keys['ArrowLeft'] = true;
+        leftBtn.classList.add('pressed');
+    });
+
+    leftBtn.addEventListener('touchend', (e) => {
+        preventDefaults(e);
+        keys['ArrowLeft'] = false;
+        leftBtn.classList.remove('pressed');
+    });
+
+    leftBtn.addEventListener('touchcancel', (e) => {
+        preventDefaults(e);
+        keys['ArrowLeft'] = false;
+        leftBtn.classList.remove('pressed');
+    });
+
+    // Right button
+    rightBtn.addEventListener('touchstart', (e) => {
+        preventDefaults(e);
+        keys['ArrowRight'] = true;
+        rightBtn.classList.add('pressed');
+    });
+
+    rightBtn.addEventListener('touchend', (e) => {
+        preventDefaults(e);
+        keys['ArrowRight'] = false;
+        rightBtn.classList.remove('pressed');
+    });
+
+    rightBtn.addEventListener('touchcancel', (e) => {
+        preventDefaults(e);
+        keys['ArrowRight'] = false;
+        rightBtn.classList.remove('pressed');
+    });
+
+    // Jump button
+    jumpBtn.addEventListener('touchstart', (e) => {
+        preventDefaults(e);
+        keys[' '] = true;
+        jumpBtn.classList.add('pressed');
+    });
+
+    jumpBtn.addEventListener('touchend', (e) => {
+        preventDefaults(e);
+        keys[' '] = false;
+        jumpBtn.classList.remove('pressed');
+    });
+
+    jumpBtn.addEventListener('touchcancel', (e) => {
+        preventDefaults(e);
+        keys[' '] = false;
+        jumpBtn.classList.remove('pressed');
+    });
+
+    // Also add mouse events for testing on desktop
+    leftBtn.addEventListener('mousedown', () => {
+        keys['ArrowLeft'] = true;
+        leftBtn.classList.add('pressed');
+    });
+
+    leftBtn.addEventListener('mouseup', () => {
+        keys['ArrowLeft'] = false;
+        leftBtn.classList.remove('pressed');
+    });
+
+    leftBtn.addEventListener('mouseleave', () => {
+        keys['ArrowLeft'] = false;
+        leftBtn.classList.remove('pressed');
+    });
+
+    rightBtn.addEventListener('mousedown', () => {
+        keys['ArrowRight'] = true;
+        rightBtn.classList.add('pressed');
+    });
+
+    rightBtn.addEventListener('mouseup', () => {
+        keys['ArrowRight'] = false;
+        rightBtn.classList.remove('pressed');
+    });
+
+    rightBtn.addEventListener('mouseleave', () => {
+        keys['ArrowRight'] = false;
+        rightBtn.classList.remove('pressed');
+    });
+
+    jumpBtn.addEventListener('mousedown', () => {
+        keys[' '] = true;
+        jumpBtn.classList.add('pressed');
+    });
+
+    jumpBtn.addEventListener('mouseup', () => {
+        keys[' '] = false;
+        jumpBtn.classList.remove('pressed');
+    });
+
+    jumpBtn.addEventListener('mouseleave', () => {
+        keys[' '] = false;
+        jumpBtn.classList.remove('pressed');
+    });
+
+    // Mute button
+    if (muteBtn) {
+        muteBtn.addEventListener('click', () => {
+            audioManager.toggleMute();
+            muteBtn.textContent = audioManager.isMuted ? '🔇' : '🔊';
+        });
+
+        muteBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            audioManager.toggleMute();
+            muteBtn.textContent = audioManager.isMuted ? '🔇' : '🔊';
+        });
+    }
+}
+
+// Initialize mobile controls when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupMobileControls);
+} else {
+    setupMobileControls();
+}
 
 // Handle input
 function handleInput() {
@@ -1341,24 +1637,31 @@ function gameLoop(currentTime) {
     if (gameState === 'playing') {
         // Handle input
         handleInput();
-        
+
         // Update
         player.update(deltaTime);
         enemies.forEach(enemy => enemy.update(deltaTime));
         items.forEach(item => item.update(deltaTime));
         decorations.forEach(decoration => decoration.update(deltaTime));
-        
+
         // Update particles
         particles = particles.filter(p => {
             p.update(deltaTime);
             return p.life > 0;
         });
-        
+
         // Collisions
         handleCollisions();
-        
+
         // Camera
         updateCamera();
+
+        // Handle music based on player state
+        if (player.inWater) {
+            audioManager.playSwimmingMusic();
+        } else {
+            audioManager.playBackgroundMusic();
+        }
         
         // Draw
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1388,6 +1691,7 @@ function gameLoop(currentTime) {
 // Game over
 function gameOver() {
     gameState = 'gameover';
+    audioManager.playDeath();
     document.getElementById('finalScore').textContent = `Final Score: ${score}`;
     document.getElementById('gameOverScreen').style.display = 'flex';
 }
@@ -1398,12 +1702,15 @@ function restartGame() {
     score = 0;
     level = 1;
     document.getElementById('gameOverScreen').style.display = 'none';
-    
+
     // Reset player
     player = new Player(100, 300);
-    
+
     // Recreate level
     createLevel();
+
+    // Start background music
+    audioManager.playBackgroundMusic();
 }
 
 // Next level
