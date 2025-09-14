@@ -46,6 +46,7 @@ let gameState = 'loading';
 let score = 0;
 let level = 1;
 let camera = { x: 0, y: 0 };
+let levelBoss = null;
 
 // Audio Manager
 class AudioManager {
@@ -809,7 +810,23 @@ class Enemy {
         
         // Flying enemies have different movement
         if (this.isFlying) {
-            this.vy += Math.sin(Date.now() * 0.003) * 0.5; // Floating movement
+            // Proper floating movement with altitude maintenance
+            const time = Date.now() * 0.002;
+            const baseFloatSpeed = 0.3;
+            const floatAmplitude = 1.0;
+
+            // Sine wave floating motion
+            this.vy = Math.sin(time + this.x * 0.01) * floatAmplitude;
+
+            // Add some gentle up/down drift to make it more natural
+            if (this.floatOffset === undefined) {
+                this.floatOffset = Math.random() * Math.PI * 2;
+            }
+            this.vy += Math.sin(time * 0.5 + this.floatOffset) * baseFloatSpeed;
+
+            // Constrain flying enemies to stay in air (not too high or low)
+            if (this.y < 50) this.vy = Math.max(this.vy, 0.5);
+            if (this.y > canvas.height - 150) this.vy = Math.min(this.vy, -0.5);
         }
         
         // Update animation
@@ -834,23 +851,30 @@ class Enemy {
             this.animFrame = idx;
         }
         
-        // Patrol behavior for non-fish enemies
+        // Patrol behavior
         if (!this.isFish) {
-            // Check for edges (prevent falling off platforms)
-            const nextX = this.x + this.vx;
-            let onGround = false;
-            
-            // Check if enemy will be on ground at next position
-            platforms.forEach(platform => {
-                if (nextX + this.width > platform.x && nextX < platform.x + platform.width &&
-                    this.y + this.height >= platform.y && this.y + this.height <= platform.y + platform.height + 5) {
-                    onGround = true;
+            if (this.isFlying) {
+                // Flying enemies just turn around at patrol distance
+                if (Math.abs(this.x - this.startX) > this.patrolDistance) {
+                    this.vx *= -1;
                 }
-            });
-            
-            // Turn around if reaching edge or patrol distance
-            if (!onGround || Math.abs(this.x - this.startX) > this.patrolDistance) {
-                this.vx *= -1;
+            } else {
+                // Ground enemies check for edges (prevent falling off platforms)
+                const nextX = this.x + this.vx;
+                let onGround = false;
+
+                // Check if enemy will be on ground at next position
+                platforms.forEach(platform => {
+                    if (nextX + this.width > platform.x && nextX < platform.x + platform.width &&
+                        this.y + this.height >= platform.y && this.y + this.height <= platform.y + platform.height + 5) {
+                        onGround = true;
+                    }
+                });
+
+                // Turn around if reaching edge or patrol distance
+                if (!onGround || Math.abs(this.x - this.startX) > this.patrolDistance) {
+                    this.vx *= -1;
+                }
             }
         }
         
@@ -938,6 +962,148 @@ class Platform {
             ctx.fillStyle = this.type === 'grass' ? '#4a7c59' : '#8b4513';
             ctx.fillRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
         }
+    }
+}
+
+// Boss class
+class Boss extends Enemy {
+    constructor(x, y, type, health, name) {
+        super(x, y, type);
+        this.maxHealth = health;
+        this.health = health;
+        this.name = name;
+        this.isBoss = true;
+        this.width = 48;
+        this.height = 48;
+        this.attackTimer = 0;
+        this.attackCooldown = 2000; // 2 seconds between attacks
+        this.aggroRange = 300;
+        this.isAggro = false;
+        this.originalSpeed = this.vx;
+        this.patrolDistance = 200;
+        this.hurtTimer = 0;
+        this.hurtFlashDuration = 200;
+    }
+
+    update(deltaTime) {
+        // Check if player is in aggro range
+        const distToPlayer = Math.sqrt(
+            Math.pow(this.x - player.x, 2) + Math.pow(this.y - player.y, 2)
+        );
+
+        if (distToPlayer <= this.aggroRange) {
+            this.isAggro = true;
+        }
+
+        if (this.isAggro) {
+            // Move towards player when aggro
+            const playerDirection = player.x > this.x ? 1 : -1;
+            this.vx = this.originalSpeed * 2 * playerDirection; // Faster when chasing
+
+            // Attack behavior
+            this.attackTimer -= deltaTime;
+            if (this.attackTimer <= 0 && distToPlayer < 100) {
+                this.performAttack();
+                this.attackTimer = this.attackCooldown;
+            }
+        }
+
+        // Update hurt flash
+        if (this.hurtTimer > 0) {
+            this.hurtTimer -= deltaTime;
+        }
+
+        // Call parent update for movement
+        super.update(deltaTime);
+    }
+
+    performAttack() {
+        // Quick dash attack
+        const dashDirection = player.x > this.x ? 1 : -1;
+        this.vx = dashDirection * 8; // Fast dash
+
+        // Create attack particles
+        createParticles(this.x + this.width/2, this.y + this.height/2, '#ff4444', 10);
+
+        // Reset to normal speed after short time
+        setTimeout(() => {
+            if (this.isAggro) {
+                this.vx = this.originalSpeed * 2 * (player.x > this.x ? 1 : -1);
+            }
+        }, 300);
+    }
+
+    takeDamage(amount) {
+        this.health -= amount;
+        this.hurtTimer = this.hurtFlashDuration;
+
+        if (this.health <= 0) {
+            // Boss defeated - trigger level completion
+            score += 500; // Bonus points for boss
+            audioManager.playEnemyKilled();
+            createParticles(this.x + this.width/2, this.y + this.height/2, '#gold', 25);
+            return true; // Boss is dead
+        }
+        return false;
+    }
+
+    draw(ctx) {
+        const sprites = this.getSprites();
+        if (!sprites || sprites.length === 0) return;
+
+        // Flash red when hurt
+        if (this.hurtTimer > 0) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.fillStyle = '#ff6666';
+            ctx.fillRect(
+                this.x - camera.x,
+                this.y - camera.y,
+                this.width,
+                this.height
+            );
+            ctx.restore();
+        }
+
+        // Draw boss (larger)
+        const sprite = sprites[this.animFrame % sprites.length];
+        if (sprite && sprite.complete) {
+            ctx.save();
+            ctx.translate(this.x + this.width/2 - camera.x, this.y + this.height/2 - camera.y);
+            if (this.vx < 0) ctx.scale(-1, 1);
+            ctx.drawImage(sprite, -this.width/2, -this.height/2, this.width, this.height);
+            ctx.restore();
+        }
+
+        // Draw boss health bar
+        const barWidth = 60;
+        const barHeight = 6;
+        const barX = this.x - camera.x - (barWidth - this.width) / 2;
+        const barY = this.y - camera.y - 15;
+
+        // Background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
+
+        // Health bar
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(barX, barY, barWidth, barHeight);
+        ctx.fillStyle = '#ffdd00';
+        ctx.fillRect(barX, barY, (barWidth * this.health) / this.maxHealth, barHeight);
+
+        // Boss name
+        if (this.isAggro) {
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(this.name, this.x + this.width/2 - camera.x, barY - 5);
+            ctx.textAlign = 'left';
+        }
+    }
+
+    getSprites() {
+        if (!sprites.enemies[this.type]) return [];
+        return sprites.enemies[this.type];
     }
 }
 
@@ -1155,6 +1321,386 @@ function initGame() {
     gameLoop();
 }
 
+// Level configurations
+const levelConfigs = {
+    1: {
+        name: "Grassland Plains",
+        platforms: [
+            // Ground platforms with proper boundaries
+            {x: 0, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 300, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 600, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 900, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 1200, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 1500, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 1800, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 2100, y: 544, w: 400, h: 32, type: 'grass'}, // Boss area
+            // Floating platforms
+            {x: 150, y: 450, w: 96, h: 32, type: 'grass'},
+            {x: 350, y: 400, w: 128, h: 32, type: 'grass'},
+            {x: 550, y: 350, w: 96, h: 32, type: 'grass'},
+            {x: 750, y: 300, w: 128, h: 32, type: 'grass'},
+            {x: 950, y: 250, w: 96, h: 32, type: 'grass'},
+            {x: 1150, y: 300, w: 128, h: 32, type: 'grass'},
+            {x: 1350, y: 200, w: 96, h: 32, type: 'grass'},
+            {x: 1550, y: 150, w: 128, h: 32, type: 'grass'},
+            {x: 1750, y: 200, w: 96, h: 32, type: 'grass'},
+            {x: 1950, y: 350, w: 160, h: 32, type: 'grass'}, // Boss platform
+            // Boundary walls
+            {x: -32, y: 0, w: 32, h: 576, type: 'dirt'}, // Left wall
+            {x: 2500, y: 0, w: 32, h: 576, type: 'dirt'} // Right wall
+        ],
+        enemies: [
+            {x: 250, y: 514, type: 'redDino'},
+            {x: 450, y: 514, type: 'yellowDino'},
+            {x: 650, y: 514, type: 'purpleDino'},
+            {x: 850, y: 514, type: 'redDino'},
+            {x: 1050, y: 514, type: 'yellowDino'},
+            {x: 1250, y: 514, type: 'purpleDino'},
+            {x: 300, y: 360, type: 'brownBat'},
+            {x: 500, y: 310, type: 'purpleBat'},
+            {x: 700, y: 260, type: 'angryBird'},
+            {x: 900, y: 210, type: 'brownBat'},
+            {x: 1100, y: 260, type: 'purpleBat'},
+            {x: 1300, y: 160, type: 'angryBird'},
+            {x: 1500, y: 110, type: 'brownBat'},
+            {x: 1700, y: 160, type: 'purpleBat'},
+            {x: 400, y: 590, type: 'greenFish'},
+            {x: 800, y: 590, type: 'greenFish'},
+            {x: 1200, y: 590, type: 'greenFish'},
+            {x: 1600, y: 590, type: 'greenFish'}
+        ],
+        boss: {x: 2200, y: 300, type: 'angryBird', health: 5, name: 'Sky Guardian'},
+        water: [
+            // Large water body at bottom for swimming with gaps for platforms
+            {x: 0, y: 576, w: 200, h: 400}, // Under first platform
+            {x: 300, y: 576, w: 100, h: 400}, // Gap between platforms
+            {x: 500, y: 576, w: 100, h: 400},
+            {x: 700, y: 576, w: 200, h: 400},
+            {x: 1100, y: 576, w: 100, h: 400},
+            {x: 1300, y: 576, w: 200, h: 400},
+            {x: 1700, y: 576, w: 100, h: 400},
+            {x: 2000, y: 576, w: 500, h: 400} // Under boss area
+        ]
+    },
+    2: {
+        name: "Cave Explorer",
+        platforms: [
+            {x: 0, y: 544, w: 200, h: 32, type: 'dirt'},
+            {x: 300, y: 544, w: 200, h: 32, type: 'dirt'},
+            {x: 600, y: 544, w: 200, h: 32, type: 'dirt'},
+            {x: 900, y: 544, w: 200, h: 32, type: 'dirt'},
+            {x: 1200, y: 544, w: 400, h: 32, type: 'dirt'},
+            {x: 150, y: 450, w: 96, h: 32, type: 'dirt'},
+            {x: 350, y: 380, w: 128, h: 32, type: 'dirt'},
+            {x: 550, y: 320, w: 96, h: 32, type: 'dirt'},
+            {x: 750, y: 260, w: 128, h: 32, type: 'dirt'},
+            {x: 950, y: 200, w: 160, h: 32, type: 'dirt'},
+            {x: 1150, y: 140, w: 96, h: 32, type: 'dirt'},
+            {x: 1350, y: 200, w: 128, h: 32, type: 'dirt'}
+        ],
+        enemies: [
+            {x: 350, y: 514, type: 'purpleDino'},
+            {x: 650, y: 514, type: 'redDino'},
+            {x: 950, y: 514, type: 'yellowDino'},
+            {x: 800, y: 220, type: 'brownBat'},
+            {x: 1200, y: 100, type: 'purpleBat'}
+        ],
+        water: [{x: 200, y: 576, w: 100, h: 200}, {x: 500, y: 576, w: 100, h: 200}]
+    },
+    3: {
+        name: "Sky High",
+        platforms: [
+            {x: 0, y: 544, w: 128, h: 32, type: 'grass'},
+            {x: 200, y: 480, w: 96, h: 32, type: 'grass'},
+            {x: 350, y: 420, w: 128, h: 32, type: 'grass'},
+            {x: 550, y: 360, w: 96, h: 32, type: 'grass'},
+            {x: 700, y: 300, w: 128, h: 32, type: 'grass'},
+            {x: 900, y: 240, w: 96, h: 32, type: 'grass'},
+            {x: 1100, y: 180, w: 128, h: 32, type: 'grass'},
+            {x: 1300, y: 120, w: 96, h: 32, type: 'grass'},
+            {x: 1500, y: 80, w: 160, h: 32, type: 'grass'},
+            {x: 1700, y: 140, w: 128, h: 32, type: 'grass'},
+            {x: 1900, y: 200, w: 96, h: 32, type: 'grass'}
+        ],
+        enemies: [
+            {x: 250, y: 440, type: 'angryBird'},
+            {x: 600, y: 320, type: 'brownBat'},
+            {x: 950, y: 200, type: 'purpleBat'},
+            {x: 1350, y: 80, type: 'angryBird'},
+            {x: 1750, y: 100, type: 'brownBat'},
+            {x: 1950, y: 160, type: 'purpleBat'}
+        ],
+        water: []
+    },
+    4: {
+        name: "Water World",
+        platforms: [
+            {x: 0, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 200, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 400, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 600, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 800, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 1000, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 1200, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 1400, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 150, y: 400, w: 64, h: 32, type: 'grass'},
+            {x: 350, y: 350, w: 64, h: 32, type: 'grass'},
+            {x: 550, y: 300, w: 64, h: 32, type: 'grass'},
+            {x: 750, y: 250, w: 64, h: 32, type: 'grass'}
+        ],
+        enemies: [
+            {x: 300, y: 590, type: 'greenFish'},
+            {x: 500, y: 590, type: 'greenFish'},
+            {x: 700, y: 590, type: 'greenFish'},
+            {x: 900, y: 590, type: 'greenFish'},
+            {x: 1100, y: 590, type: 'greenFish'},
+            {x: 1300, y: 590, type: 'greenFish'},
+            {x: 200, y: 360, type: 'angryBird'},
+            {x: 600, y: 260, type: 'brownBat'}
+        ],
+        water: [
+            {x: 96, y: 576, w: 104, h: 400},
+            {x: 296, y: 576, w: 104, h: 400},
+            {x: 496, y: 576, w: 104, h: 400},
+            {x: 696, y: 576, w: 104, h: 400},
+            {x: 896, y: 576, w: 104, h: 400},
+            {x: 1096, y: 576, w: 104, h: 400},
+            {x: 1296, y: 576, w: 200, h: 400}
+        ]
+    },
+    5: {
+        name: "Jungle Maze",
+        platforms: [
+            {x: 0, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 300, y: 544, w: 100, h: 32, type: 'grass'},
+            {x: 500, y: 544, w: 100, h: 32, type: 'grass'},
+            {x: 700, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 1000, y: 544, w: 100, h: 32, type: 'grass'},
+            {x: 1200, y: 544, w: 300, h: 32, type: 'grass'},
+            {x: 150, y: 480, w: 100, h: 32, type: 'grass'},
+            {x: 350, y: 420, w: 100, h: 32, type: 'grass'},
+            {x: 550, y: 360, w: 100, h: 32, type: 'grass'},
+            {x: 750, y: 300, w: 100, h: 32, type: 'grass'},
+            {x: 250, y: 320, w: 64, h: 32, type: 'dirt'},
+            {x: 450, y: 260, w: 64, h: 32, type: 'dirt'},
+            {x: 650, y: 200, w: 64, h: 32, type: 'dirt'},
+            {x: 850, y: 240, w: 128, h: 32, type: 'grass'}
+        ],
+        enemies: [
+            {x: 350, y: 514, type: 'yellowDino'},
+            {x: 550, y: 514, type: 'purpleDino'},
+            {x: 750, y: 514, type: 'redDino'},
+            {x: 1050, y: 514, type: 'yellowDino'},
+            {x: 200, y: 440, type: 'brownBat'},
+            {x: 400, y: 380, type: 'purpleBat'},
+            {x: 600, y: 320, type: 'angryBird'},
+            {x: 900, y: 200, type: 'brownBat'}
+        ],
+        water: [{x: 400, y: 576, w: 100, h: 300}, {x: 600, y: 576, w: 100, h: 300}]
+    },
+    6: {
+        name: "Ice Caverns",
+        platforms: [
+            {x: 0, y: 544, w: 150, h: 32, type: 'dirt'},
+            {x: 250, y: 544, w: 150, h: 32, type: 'dirt'},
+            {x: 500, y: 544, w: 150, h: 32, type: 'dirt'},
+            {x: 750, y: 544, w: 150, h: 32, type: 'dirt'},
+            {x: 1000, y: 544, w: 400, h: 32, type: 'dirt'},
+            {x: 100, y: 450, w: 64, h: 32, type: 'dirt'},
+            {x: 300, y: 400, w: 64, h: 32, type: 'dirt'},
+            {x: 500, y: 350, w: 64, h: 32, type: 'dirt'},
+            {x: 700, y: 300, w: 64, h: 32, type: 'dirt'},
+            {x: 200, y: 250, w: 96, h: 32, type: 'dirt'},
+            {x: 400, y: 200, w: 96, h: 32, type: 'dirt'},
+            {x: 600, y: 150, w: 96, h: 32, type: 'dirt'},
+            {x: 800, y: 100, w: 128, h: 32, type: 'dirt'}
+        ],
+        enemies: [
+            {x: 300, y: 514, type: 'purpleDino'},
+            {x: 550, y: 514, type: 'redDino'},
+            {x: 800, y: 514, type: 'yellowDino'},
+            {x: 150, y: 410, type: 'brownBat'},
+            {x: 350, y: 360, type: 'purpleBat'},
+            {x: 550, y: 310, type: 'angryBird'},
+            {x: 750, y: 260, type: 'brownBat'},
+            {x: 450, y: 160, type: 'purpleBat'},
+            {x: 650, y: 110, type: 'angryBird'},
+            {x: 850, y: 60, type: 'brownBat'}
+        ],
+        water: [{x: 150, y: 576, w: 100, h: 200}, {x: 400, y: 576, w: 100, h: 200}, {x: 650, y: 576, w: 100, h: 200}]
+    },
+    7: {
+        name: "Floating Islands",
+        platforms: [
+            {x: 0, y: 544, w: 96, h: 32, type: 'grass'},
+            {x: 150, y: 450, w: 96, h: 32, type: 'grass'},
+            {x: 300, y: 380, w: 96, h: 32, type: 'grass'},
+            {x: 450, y: 320, w: 96, h: 32, type: 'grass'},
+            {x: 600, y: 260, w: 96, h: 32, type: 'grass'},
+            {x: 750, y: 200, w: 96, h: 32, type: 'grass'},
+            {x: 900, y: 140, w: 96, h: 32, type: 'grass'},
+            {x: 1050, y: 100, w: 96, h: 32, type: 'grass'},
+            {x: 1200, y: 160, w: 96, h: 32, type: 'grass'},
+            {x: 1350, y: 220, w: 96, h: 32, type: 'grass'},
+            {x: 1500, y: 280, w: 96, h: 32, type: 'grass'},
+            {x: 1650, y: 340, w: 96, h: 32, type: 'grass'},
+            {x: 1800, y: 400, w: 128, h: 32, type: 'grass'}
+        ],
+        enemies: [
+            {x: 200, y: 410, type: 'angryBird'},
+            {x: 350, y: 340, type: 'brownBat'},
+            {x: 500, y: 280, type: 'purpleBat'},
+            {x: 650, y: 220, type: 'angryBird'},
+            {x: 800, y: 160, type: 'brownBat'},
+            {x: 950, y: 100, type: 'purpleBat'},
+            {x: 1100, y: 60, type: 'angryBird'},
+            {x: 1250, y: 120, type: 'brownBat'},
+            {x: 1400, y: 180, type: 'purpleBat'},
+            {x: 1550, y: 240, type: 'angryBird'},
+            {x: 1700, y: 300, type: 'brownBat'}
+        ],
+        water: []
+    },
+    8: {
+        name: "Underground Lake",
+        platforms: [
+            {x: 0, y: 544, w: 128, h: 32, type: 'dirt'},
+            {x: 200, y: 544, w: 128, h: 32, type: 'dirt'},
+            {x: 400, y: 544, w: 128, h: 32, type: 'dirt'},
+            {x: 600, y: 544, w: 128, h: 32, type: 'dirt'},
+            {x: 800, y: 544, w: 128, h: 32, type: 'dirt'},
+            {x: 1000, y: 544, w: 128, h: 32, type: 'dirt'},
+            {x: 1200, y: 544, w: 200, h: 32, type: 'dirt'},
+            {x: 150, y: 480, w: 64, h: 32, type: 'dirt'},
+            {x: 350, y: 420, w: 64, h: 32, type: 'dirt'},
+            {x: 550, y: 360, w: 64, h: 32, type: 'dirt'},
+            {x: 750, y: 300, w: 64, h: 32, type: 'dirt'},
+            {x: 950, y: 240, w: 64, h: 32, type: 'dirt'}
+        ],
+        enemies: [
+            {x: 250, y: 514, type: 'redDino'},
+            {x: 450, y: 514, type: 'purpleDino'},
+            {x: 650, y: 514, type: 'yellowDino'},
+            {x: 850, y: 514, type: 'redDino'},
+            {x: 1050, y: 514, type: 'purpleDino'},
+            {x: 300, y: 590, type: 'greenFish'},
+            {x: 500, y: 590, type: 'greenFish'},
+            {x: 700, y: 590, type: 'greenFish'},
+            {x: 900, y: 590, type: 'greenFish'},
+            {x: 1100, y: 590, type: 'greenFish'},
+            {x: 200, y: 440, type: 'brownBat'},
+            {x: 400, y: 380, type: 'purpleBat'},
+            {x: 600, y: 320, type: 'angryBird'}
+        ],
+        water: [
+            {x: 128, y: 576, w: 72, h: 400},
+            {x: 328, y: 576, w: 72, h: 400},
+            {x: 528, y: 576, w: 72, h: 400},
+            {x: 728, y: 576, w: 72, h: 400},
+            {x: 928, y: 576, w: 72, h: 400},
+            {x: 1128, y: 576, w: 272, h: 400}
+        ]
+    },
+    9: {
+        name: "Sky Fortress",
+        platforms: [
+            {x: 0, y: 544, w: 64, h: 32, type: 'dirt'},
+            {x: 120, y: 480, w: 64, h: 32, type: 'dirt'},
+            {x: 240, y: 420, w: 64, h: 32, type: 'dirt'},
+            {x: 360, y: 360, w: 64, h: 32, type: 'dirt'},
+            {x: 480, y: 300, w: 64, h: 32, type: 'dirt'},
+            {x: 600, y: 240, w: 64, h: 32, type: 'dirt'},
+            {x: 720, y: 180, w: 64, h: 32, type: 'dirt'},
+            {x: 840, y: 120, w: 64, h: 32, type: 'dirt'},
+            {x: 960, y: 80, w: 64, h: 32, type: 'dirt'},
+            {x: 1080, y: 40, w: 128, h: 32, type: 'dirt'},
+            {x: 1250, y: 80, w: 64, h: 32, type: 'dirt'},
+            {x: 1370, y: 120, w: 64, h: 32, type: 'dirt'},
+            {x: 1490, y: 160, w: 64, h: 32, type: 'dirt'},
+            {x: 1610, y: 200, w: 96, h: 32, type: 'dirt'}
+        ],
+        enemies: [
+            {x: 70, y: 504, type: 'yellowDino'},
+            {x: 170, y: 440, type: 'purpleBat'},
+            {x: 290, y: 380, type: 'angryBird'},
+            {x: 410, y: 320, type: 'brownBat'},
+            {x: 530, y: 260, type: 'purpleBat'},
+            {x: 650, y: 200, type: 'angryBird'},
+            {x: 770, y: 140, type: 'brownBat'},
+            {x: 890, y: 80, type: 'purpleBat'},
+            {x: 1010, y: 40, type: 'angryBird'},
+            {x: 1130, y: 0, type: 'brownBat'},
+            {x: 1300, y: 40, type: 'purpleBat'},
+            {x: 1420, y: 80, type: 'angryBird'},
+            {x: 1540, y: 120, type: 'brownBat'}
+        ],
+        water: []
+    },
+    10: {
+        name: "The Gauntlet",
+        platforms: [
+            {x: 0, y: 544, w: 96, h: 32, type: 'dirt'},
+            {x: 150, y: 500, w: 64, h: 32, type: 'dirt'},
+            {x: 270, y: 456, w: 64, h: 32, type: 'dirt'},
+            {x: 390, y: 412, w: 64, h: 32, type: 'dirt'},
+            {x: 510, y: 368, w: 64, h: 32, type: 'dirt'},
+            {x: 630, y: 324, w: 64, h: 32, type: 'dirt'},
+            {x: 750, y: 280, w: 64, h: 32, type: 'dirt'},
+            {x: 870, y: 236, w: 64, h: 32, type: 'dirt'},
+            {x: 990, y: 192, w: 64, h: 32, type: 'dirt'},
+            {x: 1110, y: 148, w: 64, h: 32, type: 'dirt'},
+            {x: 1230, y: 104, w: 64, h: 32, type: 'dirt'},
+            {x: 1350, y: 60, w: 128, h: 32, type: 'dirt'},
+            {x: 1520, y: 104, w: 64, h: 32, type: 'dirt'},
+            {x: 1640, y: 148, w: 64, h: 32, type: 'dirt'},
+            {x: 1760, y: 192, w: 64, h: 32, type: 'dirt'},
+            {x: 1880, y: 236, w: 128, h: 32, type: 'dirt'}
+        ],
+        enemies: [
+            {x: 120, y: 460, type: 'redDino'},
+            {x: 200, y: 416, type: 'purpleBat'},
+            {x: 320, y: 372, type: 'angryBird'},
+            {x: 440, y: 328, type: 'yellowDino'},
+            {x: 560, y: 284, type: 'brownBat'},
+            {x: 680, y: 240, type: 'purpleBat'},
+            {x: 800, y: 196, type: 'angryBird'},
+            {x: 920, y: 152, type: 'redDino'},
+            {x: 1040, y: 108, type: 'brownBat'},
+            {x: 1160, y: 64, type: 'purpleBat'},
+            {x: 1280, y: 20, type: 'angryBird'},
+            {x: 1400, y: 20, type: 'brownBat'},
+            {x: 1570, y: 64, type: 'purpleDino'},
+            {x: 1690, y: 108, type: 'angryBird'},
+            {x: 1810, y: 152, type: 'yellowDino'},
+            {x: 1930, y: 196, type: 'brownBat'}
+        ],
+        water: [{x: 96, y: 576, w: 54, h: 300}, {x: 214, y: 576, w: 56, h: 300}, {x: 334, y: 576, w: 56, h: 300}]
+    },
+    11: {
+        name: "Bonus Paradise",
+        platforms: [
+            {x: 0, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 300, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 600, y: 544, w: 200, h: 32, type: 'grass'},
+            {x: 900, y: 544, w: 300, h: 32, type: 'grass'},
+            {x: 150, y: 450, w: 128, h: 32, type: 'grass'},
+            {x: 450, y: 400, w: 128, h: 32, type: 'grass'},
+            {x: 750, y: 350, w: 128, h: 32, type: 'grass'},
+            {x: 1050, y: 300, w: 160, h: 32, type: 'grass'}
+        ],
+        enemies: [
+            {x: 350, y: 514, type: 'yellowDino'},
+            {x: 650, y: 514, type: 'purpleDino'},
+            {x: 950, y: 514, type: 'redDino'},
+            {x: 200, y: 410, type: 'brownBat'},
+            {x: 500, y: 360, type: 'purpleBat'},
+            {x: 800, y: 310, type: 'angryBird'}
+        ],
+        water: [{x: 200, y: 576, w: 100, h: 200}, {x: 500, y: 576, w: 100, h: 200}]
+    }
+};
+
 // Create level with new sprites and decorations
 function createLevel() {
     platforms = [];
@@ -1162,84 +1708,120 @@ function createLevel() {
     items = [];
     decorations = [];
     waterBodies = [];
-    
-    // Main ground with gaps for water - at bottom of screen
-    platforms.push(new Platform(0, 544, 150, 32, 'grass'));       // Before first water
-    platforms.push(new Platform(350, 544, 250, 32, 'grass'));     // Between first and second water
-    platforms.push(new Platform(750, 544, 350, 32, 'grass'));     // Between second and third water
-    platforms.push(new Platform(1400, 544, 300, 32, 'grass'));    // Between third and fourth water
-    platforms.push(new Platform(1880, 544, 1960, 32, 'grass'));   // After last water
-    
-    // Floating platforms
-    platforms.push(new Platform(200, 420, 128, 32, 'grass'));
-    platforms.push(new Platform(380, 360, 96, 32, 'grass'));
-    platforms.push(new Platform(530, 300, 128, 32, 'grass'));
-    platforms.push(new Platform(710, 240, 96, 32, 'grass'));
-    platforms.push(new Platform(860, 300, 128, 32, 'grass'));
-    platforms.push(new Platform(1050, 200, 160, 32, 'grass'));
-    platforms.push(new Platform(1280, 150, 128, 32, 'grass'));
-    platforms.push(new Platform(1480, 200, 96, 32, 'grass'));
-    platforms.push(new Platform(1100, 400, 128, 32, 'dirt'));
-    platforms.push(new Platform(1350, 420, 160, 32, 'dirt'));
-    platforms.push(new Platform(1600, 380, 128, 32, 'grass'));
-    platforms.push(new Platform(1800, 340, 96, 32, 'grass'));
-    
-    // Create diverse enemies
-    const enemyTypes = ['greenFish', 'redDino', 'purpleDino', 'yellowDino', 'brownBat', 'purpleBat'];
-    enemies.push(new Enemy(200, 590, 'greenFish')); // Fish in giant water below ground
-    enemies.push(new Enemy(400, 514, 'redDino'));
-    enemies.push(new Enemy(800, 514, 'yellowDino'));
-    enemies.push(new Enemy(1150, 160, 'brownBat'));
-    enemies.push(new Enemy(1200, 590, 'greenFish')); // Fish in giant water below ground
-    enemies.push(new Enemy(1650, 340, 'purpleBat'));
-    enemies.push(new Enemy(950, 150, 'angryBird'));
-    
-    // Create items using new sprite types
-    items.push(new Item(240, 390, 'coin'));
-    items.push(new Item(410, 330, 'donut'));
-    items.push(new Item(570, 270, 'coin'));
-    items.push(new Item(740, 210, 'key'));
-    items.push(new Item(890, 270, 'coin'));
-    items.push(new Item(1100, 170, 'heart'));
-    items.push(new Item(1320, 120, 'key'));
-    items.push(new Item(1500, 170, 'donut'));
-    
-    // Ground level items
-    for (let i = 0; i < 15; i++) {
-        const itemType = i % 3 === 0 ? 'donut' : 'coin';
-        items.push(new Item(150 + i * 120, 470, itemType));
+    levelBoss = null;
+
+    // Get current level config (cycle through levels 1-11)
+    const currentLevelConfig = levelConfigs[((level - 1) % 11) + 1];
+
+    if (!currentLevelConfig) {
+        console.error(`No level config found for level ${level}`);
+        return;
     }
-    
-    // Add more items
-    items.push(new Item(1150, 370, 'coin'));
-    items.push(new Item(1400, 390, 'heart'));
-    items.push(new Item(1650, 350, 'key'));
-    items.push(new Item(1830, 310, 'coin'));
-    
-    // Add decorative elements
-    decorations.push(new Decoration(180, 420, 'tree'));
-    decorations.push(new Decoration(350, 300, 'bigTree'));
-    decorations.push(new Decoration(500, 240, 'ladder'));
-    decorations.push(new Decoration(650, 180, 'tree'));
-    decorations.push(new Decoration(950, 240, 'ladder'));
-    decorations.push(new Decoration(1200, 90, 'bigTree'));
-    decorations.push(new Decoration(1450, 140, 'tree'));
-    decorations.push(new Decoration(1700, 320, 'ladder'));
-    decorations.push(new Decoration(1900, 280, 'tree'));
-    
-    // Add one giant water body below the ground level that extends way down
-    waterBodies.push(new Water(0, 576, 3840, 1000)); // Giant water below ground level extending far down
-    
-    // Add some animated bubbles near water areas
+
+    // Create platforms
+    currentLevelConfig.platforms.forEach(p => {
+        platforms.push(new Platform(p.x, p.y, p.w, p.h, p.type));
+    });
+
+    // Create enemies with level scaling
+    const enemyMultiplier = Math.floor((level - 1) / 11) + 1; // Increase enemies every 11 levels
+    currentLevelConfig.enemies.forEach(e => {
+        enemies.push(new Enemy(e.x, e.y, e.type));
+    });
+
+    // Create boss if level has one
+    if (currentLevelConfig.boss) {
+        const b = currentLevelConfig.boss;
+        levelBoss = new Boss(b.x, b.y, b.type, b.health * enemyMultiplier, b.name);
+    }
+
+    // Add extra enemies for higher difficulty cycles
+    if (enemyMultiplier > 1) {
+        const extraEnemyTypes = ['brownBat', 'purpleBat', 'angryBird', 'greenBird'];
+        for (let i = 0; i < (enemyMultiplier - 1) * 2; i++) {
+            const enemyType = extraEnemyTypes[i % extraEnemyTypes.length];
+            const randomPlatform = platforms[Math.floor(Math.random() * platforms.length)];
+            if (randomPlatform) {
+                enemies.push(new Enemy(
+                    randomPlatform.x + Math.random() * randomPlatform.width,
+                    randomPlatform.y - 50,
+                    enemyType
+                ));
+            }
+        }
+    }
+
+    // Create water bodies
+    currentLevelConfig.water.forEach(w => {
+        waterBodies.push(new Water(w.x, w.y, w.w, w.h));
+    });
+
+    // Generate items based on level
+    generateLevelItems();
+
+    // Add decorations
+    generateLevelDecorations();
+
+    // Add animated bubbles near water areas
     waterBodies.forEach(water => {
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < Math.min(3, Math.floor(water.width / 100)); i++) {
             decorations.push(new Decoration(
-                water.x + Math.random() * water.width,
-                water.y + Math.random() * water.height,
+                water.x + (i + 1) * (water.width / 4),
+                water.y + Math.random() * Math.min(50, water.height),
                 'bubbles'
             ));
         }
     });
+}
+
+function generateLevelItems() {
+    const itemTypes = ['coin', 'donut', 'heart', 'key'];
+    const itemsPerPlatform = level <= 5 ? 1 : Math.min(2, Math.floor(level / 5));
+
+    // Place items on platforms
+    platforms.forEach((platform, index) => {
+        if (platform.width >= 64) { // Only place items on platforms big enough
+            for (let i = 0; i < itemsPerPlatform; i++) {
+                const itemType = itemTypes[Math.floor(Math.random() * itemTypes.length)];
+                const x = platform.x + (i + 1) * (platform.width / (itemsPerPlatform + 1));
+                const y = platform.y - 30;
+                items.push(new Item(x, y, itemType));
+            }
+        }
+    });
+
+    // Add ground level items
+    const groundItemCount = Math.min(20, 8 + level);
+    for (let i = 0; i < groundItemCount; i++) {
+        const itemType = i % 4 === 0 ? 'heart' : (i % 3 === 0 ? 'donut' : 'coin');
+        items.push(new Item(50 + i * 80, 470, itemType));
+    }
+}
+
+function generateLevelDecorations() {
+    const decorationTypes = ['tree', 'bigTree', 'ladder'];
+    const decorationCount = Math.min(10, 4 + Math.floor(level / 2));
+
+    // Place decorations randomly but avoid overlapping with platforms
+    for (let i = 0; i < decorationCount; i++) {
+        const decorationType = decorationTypes[Math.floor(Math.random() * decorationTypes.length)];
+        const x = 100 + Math.random() * 1200;
+        const y = 200 + Math.random() * 200;
+
+        // Check if position is clear of platforms
+        let canPlace = true;
+        for (const platform of platforms) {
+            if (x > platform.x - 50 && x < platform.x + platform.width + 50 &&
+                y > platform.y - 50 && y < platform.y + platform.height + 50) {
+                canPlace = false;
+                break;
+            }
+        }
+
+        if (canPlace) {
+            decorations.push(new Decoration(x, y, decorationType));
+        }
+    }
 }
 
 // Collision detection
@@ -1292,16 +1874,30 @@ function handleCollisions() {
                         enemy.y = platform.y - enemy.height;
                         enemy.vy = 0;
                         enemy.grounded = true;
-            }
+                    }
+                }
+            });
         }
     });
+
+    // Boss vs Platforms
+    if (levelBoss && !levelBoss.isFlying) {
+        levelBoss.grounded = false;
+        platforms.forEach(platform => {
+            if (checkCollision(levelBoss, platform)) {
+                if (levelBoss.vy > 0 && levelBoss.y < platform.y) {
+                    levelBoss.y = platform.y - levelBoss.height;
+                    levelBoss.vy = 0;
+                    levelBoss.grounded = true;
+                }
+            }
+        });
+    }
 
     // After resolving collisions, finalize hero walking animation with accurate grounded state
     if (typeof player.postCollisionsUpdate === 'function') {
         player.postCollisionsUpdate();
     }
-}
-    });
     
     // Player vs Enemies
     enemies.forEach((enemy, index) => {
@@ -1321,6 +1917,27 @@ function handleCollisions() {
             }
         }
     });
+
+    // Player vs Boss
+    if (levelBoss && checkCollision(player, levelBoss)) {
+        // Jump on boss
+        if (player.vy > 0 && player.y < levelBoss.y) {
+            player.vy = JUMP_FORCE / 2;
+            const bossDefeated = levelBoss.takeDamage(1);
+            if (bossDefeated) {
+                levelBoss = null;
+                // Trigger level completion after a brief delay
+                setTimeout(() => {
+                    nextLevel();
+                }, 1000);
+            }
+        } else {
+            // Take damage from boss
+            player.takeDamage(15); // Bosses deal more damage
+            player.vx = (player.x < levelBoss.x) ? -10 : 10;
+            player.vy = -6;
+        }
+    }
     
     // Player vs Water
     waterBodies.forEach(water => {
@@ -1573,12 +2190,17 @@ function drawGUI(ctx) {
     ctx.font = 'bold 20px Arial';
     ctx.fillText(`Score: ${score}`, 15, 62);
     
-    // Level
+    // Level and Level Name
+    const currentLevelConfig = levelConfigs[((level - 1) % 11) + 1];
+    const levelName = currentLevelConfig ? currentLevelConfig.name : "Unknown";
+
     ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(canvas.width - 110, 10, 100, 30);
+    ctx.fillRect(canvas.width - 200, 10, 190, 50);
     ctx.fillStyle = 'white';
     ctx.font = 'bold 18px Arial';
-    ctx.fillText(`Level: ${level}`, canvas.width - 105, 32);
+    ctx.fillText(`Level: ${level}`, canvas.width - 195, 32);
+    ctx.font = '14px Arial';
+    ctx.fillText(levelName, canvas.width - 195, 50);
     
     // Controls hint
     if (performance.now() < 5000) {
@@ -1641,6 +2263,9 @@ function gameLoop(currentTime) {
         // Update
         player.update(deltaTime);
         enemies.forEach(enemy => enemy.update(deltaTime));
+        if (levelBoss) {
+            levelBoss.update(deltaTime);
+        }
         items.forEach(item => item.update(deltaTime));
         decorations.forEach(decoration => decoration.update(deltaTime));
 
@@ -1673,15 +2298,24 @@ function gameLoop(currentTime) {
         waterBodies.forEach(water => water.draw(ctx));
         items.forEach(item => item.draw(ctx));
         enemies.forEach(enemy => enemy.draw(ctx));
+        if (levelBoss) {
+            levelBoss.draw(ctx);
+        }
         particles.forEach(particle => particle.draw(ctx));
         player.draw(ctx);
         
         // Draw GUI
         drawGUI(ctx);
         
-        // Check win
-        if (enemies.length === 0 && items.filter(i => !i.collected && (i.type === 'coin' || i.type === 'donut')).length === 0) {
-            nextLevel();
+        // Check win - only if boss is defeated (if level has boss) or all enemies cleared (if no boss)
+        const currentLevelConfig = levelConfigs[((level - 1) % 11) + 1];
+        if (currentLevelConfig && currentLevelConfig.boss) {
+            // Boss level - win condition is boss defeat (handled in boss collision)
+        } else {
+            // Regular level - clear all enemies and items
+            if (enemies.length === 0 && items.filter(i => !i.collected && (i.type === 'coin' || i.type === 'donut')).length === 0) {
+                nextLevel();
+            }
         }
     }
     
