@@ -105,7 +105,7 @@ async function loadSprites() {
         if (loadedCount === totalSprites) {
             console.log('All sprites loaded! Starting game...');
             console.log('Hero sprites loaded:', Object.keys(sprites.hero));
-            console.log('Hero walk sprites:', sprites.hero.walk?.length || 0);
+            console.log('Hero walk sprites count:', sprites.hero.walk?.length || 0);
             document.getElementById('loadingScreen').style.display = 'none';
             initGame();
         }
@@ -141,9 +141,10 @@ async function loadSprites() {
     sprites.hero.walk = [];
     spritesToLoad.hero.walk.forEach(fileName => {
         const img = new Image();
-        img.src = `PNG/Hero/${fileName}`;
-        img.onload = checkAllLoaded;
-        img.onerror = () => console.error(`Failed to load: PNG/Hero/${fileName}`);
+        const path = `PNG/Hero/${fileName}`;
+        img.src = path;
+        img.onload = () => checkAllLoaded(path);
+        img.onerror = () => checkFailed(path);
         sprites.hero.walk.push(img);
     });
     
@@ -304,9 +305,17 @@ class Player {
         this.swimTimer = 0;
         this.isFlying = false;
         this.flyingTimer = 0;
+        this.animDir = 1; // for ping-pong walking
+        this._loggedWalkReady = false; // debug: log once when walk sprites are active
+        this.walkDist = 0;   // distance accumulator for walk animation
+        this.walkPhase = 0;  // continuous accumulator for deterministic indexing
+        this.walkStep = 8;   // pixels per frame advance (tune cadence)
+        this.prevX = x;      // previous X for distance-based animation
     }
     
     update(deltaTime) {
+        // Track previous X at the start of frame
+        this.prevX = this.x;
         // Handle invulnerability
         if (this.invulnerable) {
             this.invulnerableTime -= deltaTime;
@@ -334,23 +343,6 @@ class Player {
             }
         }
         
-        // Update animation
-        this.animTimer += deltaTime;
-        const animSpeed = this.inWater ? 150 : 100;
-        if (this.animTimer > animSpeed) {
-            this.animTimer = 0;
-            if (this.state === 'idle') {
-                this.animFrame = (this.animFrame + 1) % sprites.hero.idle.length;
-            } else if (this.state === 'running') {
-                this.animFrame = (this.animFrame + 1) % sprites.hero.walk.length;
-            } else if (this.state === 'jumping') {
-                this.animFrame = Math.min(this.animFrame + 1, sprites.hero.jump.length - 1);
-            } else if (this.state === 'swimming') {
-                this.animFrame = (this.animFrame + 1) % sprites.hero.swimming.length;
-            } else if (this.state === 'flying') {
-                this.animFrame = (this.animFrame + 1) % sprites.hero.flying.length;
-            }
-        }
         
         // Check for flying (when running fast and not grounded)
         if (!this.grounded && !this.inWater && Math.abs(this.vx) > 4) {
@@ -365,14 +357,14 @@ class Player {
         
         // Update state (only reset animation frame when changing states)
         const oldState = this.state;
-        
+
         if (this.inWater) {
             this.state = 'swimming';
         } else if (this.isFlying) {
             this.state = 'flying';
         } else if (this.grounded) {
-            if (Math.abs(this.vx) > 0.05) {
-                this.state = 'running';
+            if (Math.abs(this.vx) > 0.1) {  // Lower threshold to detect movement
+                this.state = 'walking';
             } else {
                 this.state = 'idle';
             }
@@ -384,15 +376,52 @@ class Player {
             }
         }
         
-        // Only reset animation frame when state changes
+        // Only reset animation frame when changing to/from certain states
         if (oldState !== this.state) {
-            this.animFrame = 0;
-            console.log(`Player state changed from ${oldState} to ${this.state}, vx: ${this.vx}, grounded: ${this.grounded}`);
+            // Preserve walking animation continuity when entering or leaving walking
+            if (this.state !== 'walking' && oldState !== 'walking') {
+                this.animFrame = 0;
+                this.animTimer = 0;
+                this.animDir = 1;
+                this.walkDist = 0;
+                this.walkPhase = 0;
+            }
         }
         
-        // Debug animation occasionally
-        if ((this.state === 'running' || this.state === 'swimming') && Math.random() < 0.01) {
-            console.log(`${this.state} animation: frame ${this.animFrame}, sprites: ${sprites.hero[this.state === 'running' ? 'walk' : this.state]?.length || 0}`);
+        // Update animation AFTER the state has been determined
+        this.animTimer += deltaTime;
+        const animSpeed = 100;
+
+        if (this.state === 'walking' && sprites.hero.walk) {
+            // Deterministic distance-based ping-pong indexing
+            this.walkPhase += Math.abs(this.vx);
+            const arr = sprites.hero.walk;
+            const frames = arr.length;
+            const cycleLen = 2 * (frames - 1);
+            const stepCount = Math.floor(this.walkPhase / this.walkStep);
+            let idx = stepCount % cycleLen;
+            if (idx >= frames) idx = cycleLen - idx; // mirror for ping-pong
+            this.animFrame = idx;
+        } else if (this.state === 'idle' && sprites.hero.idle) {
+            if (this.animTimer > animSpeed) {
+                this.animTimer = 0;
+                this.animFrame = (this.animFrame + 1) % sprites.hero.idle.length;
+            }
+        } else if (this.state === 'jumping' && sprites.hero.jump) {
+            if (this.animTimer > animSpeed) {
+                this.animTimer = 0;
+                this.animFrame = Math.min(this.animFrame + 1, sprites.hero.jump.length - 1);
+            }
+        } else if (this.state === 'swimming' && sprites.hero.swimming) {
+            if (this.animTimer > animSpeed) {
+                this.animTimer = 0;
+                this.animFrame = (this.animFrame + 1) % sprites.hero.swimming.length;
+            }
+        } else if (this.state === 'flying' && sprites.hero.flying) {
+            if (this.animTimer > animSpeed) {
+                this.animTimer = 0;
+                this.animFrame = (this.animFrame + 1) % sprites.hero.flying.length;
+            }
         }
         
         // Move
@@ -401,11 +430,27 @@ class Player {
         
         // Friction - reduced for better animation
         if (this.grounded) {
-            this.vx *= 0.95; // Less friction for better walking animation
+            this.vx *= 0.85; // Much less friction for better walking animation
         } else if (this.inWater) {
             this.vx *= 0.90; // Less resistance in water for better swimming
         } else {
             this.vx *= 0.95;
+        }
+    }
+
+    // Called after collisions so grounded is accurate; keeps walk cycle in sync with actual movement
+    postCollisionsUpdate() {
+        if (this.inWater) return; // swimming handled in update time-based
+        if (this.grounded && Math.abs(this.vx) > 0.1 && sprites.hero.walk && sprites.hero.walk.length > 1) {
+            this.state = 'walking';
+            const dist = Math.abs(this.x - this.prevX);
+            this.walkPhase += dist;
+            const frames = sprites.hero.walk.length;
+            const cycleLen = 2 * (frames - 1);
+            const stepCount = Math.floor(this.walkPhase / this.walkStep);
+            let idx = stepCount % cycleLen;
+            if (idx >= frames) idx = cycleLen - idx; // mirror for ping-pong
+            this.animFrame = idx;
         }
     }
     
@@ -433,7 +478,7 @@ class Player {
         this.vx = -speed;
         this.facing = -1;
     }
-    
+
     moveRight() {
         const speed = this.inWater ? PLAYER_SPEED * 0.7 : PLAYER_SPEED;
         this.vx = speed;
@@ -455,43 +500,63 @@ class Player {
     
     draw(ctx) {
         ctx.save();
-        
+
         // Flash when invulnerable
         if (this.invulnerable && Math.floor(this.invulnerableTime / 100) % 2 === 0) {
             ctx.globalAlpha = 0.5;
         }
-        
-        // Draw hero sprite (map running state to walk sprites)
-        const spriteState = this.state === 'running' ? 'walk' : this.state;
-        
-        // Debug sprite state - more frequent logging for debugging
-        if (this.state === 'running' || this.state === 'swimming') {
-            if (Math.random() < 0.1) { // 10% chance to log
-                console.log(`Drawing ${this.state} -> ${spriteState}, sprites available: ${sprites.hero[spriteState]?.length || 0}, frame: ${this.animFrame}, vx: ${this.vx.toFixed(2)}, inWater: ${this.inWater}`);
+
+        // Determine which sprite array to use
+        let spriteArray = null;
+
+        // Prefer walking sprites when moving on ground
+        if ((this.state === 'walking' || this.state === 'running') && sprites.hero.walk && sprites.hero.walk.length > 0) {
+            spriteArray = sprites.hero.walk;
+            if (!this._loggedWalkReady) {
+                console.log('Hero walk sprites active:', ['herowalk1.png','herowalk2.png','herowalk3.png','herowalk4.png']);
+                this._loggedWalkReady = true;
             }
+        } else if (this.state === 'idle' && sprites.hero.idle && sprites.hero.idle.length > 0) {
+            spriteArray = sprites.hero.idle;
+        } else if (this.state === 'jumping' && sprites.hero.jump && sprites.hero.jump.length > 0) {
+            spriteArray = sprites.hero.jump;
+        } else if (this.state === 'swimming' && sprites.hero.swimming && sprites.hero.swimming.length > 0) {
+            spriteArray = sprites.hero.swimming;
+        } else if (this.state === 'flying' && sprites.hero.flying && sprites.hero.flying.length > 0) {
+            spriteArray = sprites.hero.flying;
+        } else if (sprites.hero.idle && sprites.hero.idle.length > 0) {
+            // Default to idle if available
+            spriteArray = sprites.hero.idle;
         }
-        
-        if (sprites.hero[spriteState] && sprites.hero[spriteState].length > 0) {
-            const spriteArray = sprites.hero[spriteState];
-            const currentSprite = spriteArray[this.animFrame % spriteArray.length];
-            
-            // Flip horizontally if facing left
-            if (this.facing === -1) {
-                ctx.scale(-1, 1);
-                ctx.translate(-(this.x - camera.x) * 2 - this.width, 0);
+
+        // Draw the sprite
+        if (spriteArray && spriteArray.length > 0) {
+            const frameIndex = Math.floor(this.animFrame) % spriteArray.length;
+            const currentSprite = spriteArray[frameIndex];
+
+            if (currentSprite && currentSprite.complete && currentSprite.naturalWidth > 0) {
+                // Flip horizontally if facing left
+                if (this.facing === -1) {
+                    ctx.scale(-1, 1);
+                    ctx.translate(-(this.x - camera.x) * 2 - this.width, 0);
+                }
+
+                ctx.drawImage(
+                    currentSprite,
+                    this.x - camera.x, this.y - camera.y,
+                    this.width, this.height
+                );
+            } else {
+                // Fallback rectangle
+                ctx.fillStyle = '#FFD700';
+                ctx.fillRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
             }
-            
-            ctx.drawImage(
-                currentSprite,
-                this.x - camera.x, this.y - camera.y,
-                this.width, this.height
-            );
         } else {
             // Fallback - use a different sprite state or basic rectangle
             let fallbackWorked = false;
             
             // Try idle sprites as fallback
-            if (spriteState !== 'idle' && sprites.hero.idle && sprites.hero.idle.length > 0) {
+            if (this.state !== 'idle' && sprites.hero.idle && sprites.hero.idle.length > 0) {
                 const currentSprite = sprites.hero.idle[0];
                 
                 if (this.facing === -1) {
@@ -537,6 +602,12 @@ class Enemy {
         this.isFlying = ['brownBat', 'purpleBat', 'angryBird', 'greenBird'].includes(type);
         this.isFish = ['greenFish', 'sidewayFish'].includes(type);
         this.waterBounds = null; // Will be set when fish is in water
+        this.animDir = 1; // for ping-pong on walkers
+        this.walkDist = 0; // accumulate distance to drive walk cycle (legacy)
+        this.walkPhase = 0; // continuous distance accumulator for deterministic index
+        // pixels per animation step for walkers (tuned per type)
+        const stepMap = { redDino: 12, purpleDino: 12, yellowDino: 12 };
+        this.walkStep = stepMap[type] || 10;
     }
     
     getHealthByType(type) {
@@ -587,13 +658,26 @@ class Enemy {
             this.vy += Math.sin(Date.now() * 0.003) * 0.5; // Floating movement
         }
         
-        // Update animation (only for non-fish enemies when moving)
-        this.animTimer += deltaTime;
-        if (this.animTimer > 150) {
-            this.animTimer = 0;
-            if (sprites.enemies[this.type] && Math.abs(this.vx) > 0.1) {
-                this.animFrame = (this.animFrame + 1) % sprites.enemies[this.type].length;
+        // Update animation
+        const arr = sprites.enemies[this.type];
+        // Flyers/fish use time-based animation; walkers use distance-based
+        if (this.isFlying || this.isFish) {
+            this.animTimer += deltaTime;
+            if (this.animTimer > 150) {
+                this.animTimer = 0;
+                if (arr && arr.length > 0) {
+                    this.animFrame = (this.animFrame + 1) % arr.length;
+                }
             }
+        } else if (arr && arr.length > 1) {
+            // Deterministic distance-based frame selection (no missed steps)
+            this.walkPhase += Math.abs(this.vx);
+            const frames = arr.length;
+            const cycleLen = 2 * (frames - 1); // ping-pong cycle length in steps
+            const stepCount = Math.floor(this.walkPhase / this.walkStep);
+            let idx = stepCount % cycleLen;
+            if (idx >= frames) idx = cycleLen - idx; // mirror for ping-pong
+            this.animFrame = idx;
         }
         
         // Patrol behavior for non-fish enemies
@@ -636,23 +720,23 @@ class Enemy {
             const spriteArray = sprites.enemies[this.type];
             const currentSprite = spriteArray[this.animFrame % spriteArray.length];
             
-            // Flip sprite based on movement direction to face the right way
-            // Reverse the logic - flip when moving right instead of left
+            // Assets face left by default; flip when moving right
             if (this.vx > 0) {
                 ctx.scale(-1, 1);
                 ctx.translate(-(this.x - camera.x) * 2 - this.width, 0);
             }
             
-            // Debug enemy direction
-            if (Math.random() < 0.01) { // Only log occasionally to avoid spam
-                console.log(`Enemy ${this.type} vx: ${this.vx}, flipped: ${this.vx > 0}`);
+            if (currentSprite && currentSprite.complete && currentSprite.naturalWidth > 0) {
+                ctx.drawImage(
+                    currentSprite,
+                    this.x - camera.x, this.y - camera.y,
+                    this.width, this.height
+                );
+            } else {
+                // Fallback if not yet loaded
+                ctx.fillStyle = '#ff6b6b';
+                ctx.fillRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
             }
-            
-            ctx.drawImage(
-                currentSprite,
-                this.x - camera.x, this.y - camera.y,
-                this.width, this.height
-            );
         } else {
             // Fallback
             ctx.fillStyle = '#ff6b6b';
@@ -1053,10 +1137,15 @@ function handleCollisions() {
                         enemy.y = platform.y - enemy.height;
                         enemy.vy = 0;
                         enemy.grounded = true;
-                    }
-                }
-            });
+            }
         }
+    });
+
+    // After resolving collisions, finalize hero walking animation with accurate grounded state
+    if (typeof player.postCollisionsUpdate === 'function') {
+        player.postCollisionsUpdate();
+    }
+}
     });
     
     // Player vs Enemies
