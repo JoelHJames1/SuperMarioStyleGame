@@ -1045,8 +1045,50 @@ class Boss extends Enemy {
             this.hurtTimer -= deltaTime;
         }
 
-        // Call parent update for movement
-        super.update(deltaTime);
+        // Custom boss movement - override parent to prevent ground collision glitches
+        if (this.isFlying) {
+            // Flying boss movement with altitude maintenance
+            const time = Date.now() * 0.002;
+            const baseFloatSpeed = 0.3;
+            const floatAmplitude = 0.8; // Gentler floating for boss
+
+            // Sine wave floating motion
+            this.vy = Math.sin(time + this.x * 0.01) * floatAmplitude;
+
+            // Add some gentle up/down drift
+            if (this.floatOffset === undefined) {
+                this.floatOffset = Math.random() * Math.PI * 2;
+            }
+            this.vy += Math.sin(time * 0.5 + this.floatOffset) * baseFloatSpeed;
+
+            // Keep boss in air - stronger constraints to prevent ground collision
+            if (this.y < 150) this.vy = Math.max(this.vy, 1); // Don't go too high
+            if (this.y > 450) this.vy = Math.min(this.vy, -2); // Stay well above ground
+
+            // Update animation like other flying enemies
+            const arr = sprites.enemies[this.type];
+            if (arr && arr.length > 0) {
+                this.animTimer += deltaTime;
+                const animSpeed = 90; // Fast flapping for boss (same as angryBird)
+                if (this.animTimer > animSpeed) {
+                    this.animTimer = 0;
+                    this.animFrame = (this.animFrame + 1) % arr.length;
+                }
+            }
+
+            // Boss-specific patrol behavior for flying type
+            if (!this.isAggro && Math.abs(this.x - this.startX) > this.patrolDistance) {
+                this.vx *= -1;
+            }
+        } else {
+            // Ground boss - use parent update
+            super.update(deltaTime);
+            return; // Exit early for ground bosses
+        }
+
+        // Move boss
+        this.x += this.vx;
+        this.y += this.vy;
     }
 
     performAttack() {
