@@ -1551,10 +1551,7 @@ function updateVictoryMessage(deltaTime) {
         victoryMessage.timer -= deltaTime;
         if (victoryMessage.timer <= 0) {
             victoryMessage.show = false;
-            // Proceed to next level after message disappears
-            setTimeout(() => {
-                nextLevel();
-            }, 500);
+            // Victory message disappears but player must go through door to continue
         }
     }
 }
@@ -1670,6 +1667,7 @@ const levelConfigs = {
             {x: 800, y: 220, type: 'brownBat'},
             {x: 1200, y: 100, type: 'purpleBat'}
         ],
+        door: {x: 1500, y: 480}, // Exit door on the rightmost platform (y: 544 - 64 = 480)
         water: [{x: 200, y: 576, w: 100, h: 200}, {x: 500, y: 576, w: 100, h: 200}]
     },
     3: {
@@ -1695,6 +1693,7 @@ const levelConfigs = {
             {x: 1750, y: 100, type: 'brownBat'},
             {x: 1950, y: 160, type: 'purpleBat'}
         ],
+        door: {x: 1900, y: 136}, // Exit door on the rightmost platform (y: 200 - 64 = 136)
         water: []
     },
     4: {
@@ -1723,6 +1722,7 @@ const levelConfigs = {
             {x: 200, y: 360, type: 'angryBird'},
             {x: 600, y: 260, type: 'brownBat'}
         ],
+        door: {x: 1400, y: 480}, // Exit door on the rightmost ground platform
         water: [
             {x: 96, y: 576, w: 104, h: 400},
             {x: 296, y: 576, w: 104, h: 400},
@@ -1761,6 +1761,7 @@ const levelConfigs = {
             {x: 600, y: 320, type: 'angryBird'},
             {x: 900, y: 200, type: 'brownBat'}
         ],
+        door: {x: 1200, y: 480}, // Exit door on the rightmost platform
         water: [{x: 400, y: 576, w: 100, h: 300}, {x: 600, y: 576, w: 100, h: 300}]
     },
     6: {
@@ -1792,6 +1793,7 @@ const levelConfigs = {
             {x: 650, y: 110, type: 'angryBird'},
             {x: 850, y: 60, type: 'brownBat'}
         ],
+        door: {x: 900, y: 480}, // Exit door on the rightmost platform
         water: [{x: 150, y: 576, w: 100, h: 200}, {x: 400, y: 576, w: 100, h: 200}, {x: 650, y: 576, w: 100, h: 200}]
     },
     7: {
@@ -1824,6 +1826,7 @@ const levelConfigs = {
             {x: 1550, y: 240, type: 'angryBird'},
             {x: 1700, y: 300, type: 'brownBat'}
         ],
+        door: {x: 2000, y: 480}, // Exit door on the rightmost platform
         water: []
     },
     8: {
@@ -1857,6 +1860,7 @@ const levelConfigs = {
             {x: 400, y: 380, type: 'purpleBat'},
             {x: 600, y: 320, type: 'angryBird'}
         ],
+        door: {x: 800, y: 480}, // Exit door on the rightmost platform
         water: [
             {x: 128, y: 576, w: 72, h: 400},
             {x: 328, y: 576, w: 72, h: 400},
@@ -1899,6 +1903,7 @@ const levelConfigs = {
             {x: 1420, y: 80, type: 'angryBird'},
             {x: 1540, y: 120, type: 'brownBat'}
         ],
+        door: {x: 1800, y: 80}, // Exit door on the rightmost platform
         water: []
     },
     10: {
@@ -1939,6 +1944,7 @@ const levelConfigs = {
             {x: 1810, y: 152, type: 'yellowDino'},
             {x: 1930, y: 196, type: 'brownBat'}
         ],
+        door: {x: 2000, y: 480}, // Exit door on the rightmost platform
         water: [{x: 96, y: 576, w: 54, h: 300}, {x: 214, y: 576, w: 56, h: 300}, {x: 334, y: 576, w: 56, h: 300}]
     },
     11: {
@@ -1961,6 +1967,7 @@ const levelConfigs = {
             {x: 500, y: 360, type: 'purpleBat'},
             {x: 800, y: 310, type: 'angryBird'}
         ],
+        door: {x: 1200, y: 480}, // Exit door on the rightmost platform
         water: [{x: 200, y: 576, w: 100, h: 200}, {x: 500, y: 576, w: 100, h: 200}]
     }
 };
@@ -2215,12 +2222,8 @@ function handleCollisions() {
 
     // Player vs Door
     if (levelDoor && checkCollision(player, levelDoor) && !levelDoor.locked) {
-        // Player reached unlocked door - victory!
-        // Already handled by door unlock which calls showVictoryMessage
-        if (!victoryMessage.show) {
-            // In case door unlocked but victory message didn't show yet
-            showVictoryMessage();
-        }
+        // Player reached unlocked door - proceed to next level!
+        nextLevel();
     }
 
     // Player vs Water
@@ -2532,7 +2535,7 @@ function drawGUI(ctx) {
         // Subtitle
         ctx.fillStyle = 'white';
         ctx.font = '24px Arial';
-        ctx.fillText('Proceeding to next level...', canvas.width/2, canvas.height/2 + 20);
+        ctx.fillText('Go through the door to continue!', canvas.width/2, canvas.height/2 + 20);
 
         // Timer bar
         const barWidth = 300;
@@ -2660,9 +2663,15 @@ function gameLoop(currentTime) {
         if (currentLevelConfig && currentLevelConfig.boss) {
             // Boss level - win condition is boss defeat (handled in boss collision)
         } else {
-            // Regular level - clear all enemies and items
+            // Regular level - clear all enemies and items, then unlock door
             if (enemies.length === 0 && items.filter(i => !i.collected && (i.type === 'coin' || i.type === 'donut')).length === 0) {
-                nextLevel();
+                if (!victoryMessage.show) {
+                    showVictoryMessage();
+                    // Unlock the door for regular levels too
+                    if (levelDoor) {
+                        levelDoor.unlock();
+                    }
+                }
             }
         }
     }
