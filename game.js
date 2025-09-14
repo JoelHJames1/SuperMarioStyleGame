@@ -47,6 +47,13 @@ let score = 0;
 let level = 1;
 let camera = { x: 0, y: 0 };
 let levelBoss = null;
+let levelDoor = null;
+let victoryMessage = {
+    show: false,
+    timer: 0,
+    duration: 3000,
+    text: ''
+};
 
 // Audio Manager
 class AudioManager {
@@ -1008,13 +1015,26 @@ class Boss extends Enemy {
         }
 
         if (this.isAggro) {
-            // Move towards player when aggro
+            // Move towards player when aggro, but stay above water level
             const playerDirection = player.x > this.x ? 1 : -1;
-            this.vx = this.originalSpeed * 2 * playerDirection; // Faster when chasing
+            const waterLevel = 576; // Y coordinate where water starts
+
+            // Only chase horizontally if player is not too deep in water
+            if (player.y < waterLevel + 50) {
+                this.vx = this.originalSpeed * 2 * playerDirection; // Faster when chasing
+            } else {
+                // Player is deep in water, hover above water instead
+                this.vx = this.originalSpeed * 0.5 * playerDirection; // Slower patrol
+
+                // Keep boss above water
+                if (this.y > waterLevel - 100) {
+                    this.vy = -2; // Float upward to stay above water
+                }
+            }
 
             // Attack behavior
             this.attackTimer -= deltaTime;
-            if (this.attackTimer <= 0 && distToPlayer < 100) {
+            if (this.attackTimer <= 0 && distToPlayer < 100 && player.y < waterLevel + 20) {
                 this.performAttack();
                 this.attackTimer = this.attackCooldown;
             }
@@ -1230,6 +1250,63 @@ class Decoration {
     }
 }
 
+// Door class - unlocks when boss is defeated
+class Door {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.width = 48;
+        this.height = 64;
+        this.locked = true;
+        this.glowTimer = 0;
+        this.unlocked = false;
+    }
+
+    update(deltaTime) {
+        // Check if boss is defeated to unlock door
+        if (this.locked && levelBoss && levelBoss.health <= 0) {
+            this.unlock();
+        }
+
+        // Glow animation when unlocked
+        if (this.unlocked) {
+            this.glowTimer += deltaTime * 0.01;
+        }
+    }
+
+    unlock() {
+        this.locked = false;
+        this.unlocked = true;
+        // Play victory sound
+        audioManager.playJump(); // Use jump sound for now
+        // Show victory message
+        showVictoryMessage();
+    }
+
+    draw(ctx) {
+        // Draw door sprite (fallback to colored rectangle for now)
+        if (this.locked) {
+            // Locked door - dark gray
+            ctx.fillStyle = '#404040';
+        } else {
+            // Unlocked door with glow effect
+            const glowIntensity = Math.sin(this.glowTimer) * 0.3 + 0.7;
+            ctx.fillStyle = `rgba(255, 215, 0, ${glowIntensity})`;
+        }
+
+        ctx.fillRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
+
+        // Door frame
+        ctx.strokeStyle = this.locked ? '#202020' : '#FFD700';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
+
+        // Door handle
+        ctx.fillStyle = this.locked ? '#606060' : '#FFA500';
+        ctx.fillRect(this.x - camera.x + this.width - 8, this.y - camera.y + this.height/2 - 3, 6, 6);
+    }
+}
+
 // Water class for swimming areas
 class Water {
     constructor(x, y, width, height) {
@@ -1304,6 +1381,39 @@ let items = [];
 let particles = [];
 let decorations = [];
 let waterBodies = [];
+
+// Show victory message like Mario
+function showVictoryMessage() {
+    victoryMessage.show = true;
+    victoryMessage.timer = victoryMessage.duration;
+    victoryMessage.text = `Level ${level} Complete!`;
+
+    // Create celebration particles
+    for (let i = 0; i < 20; i++) {
+        createParticles(player.x + player.width/2, player.y + player.height/2, '#FFD700', 5);
+    }
+
+    // Player victory pose
+    if (player.state !== 'victory') {
+        player.state = 'victory';
+        player.vx = 0; // Stop player movement during celebration
+        player.vy = 0;
+    }
+}
+
+// Update victory message
+function updateVictoryMessage(deltaTime) {
+    if (victoryMessage.show) {
+        victoryMessage.timer -= deltaTime;
+        if (victoryMessage.timer <= 0) {
+            victoryMessage.show = false;
+            // Proceed to next level after message disappears
+            setTimeout(() => {
+                nextLevel();
+            }, 500);
+        }
+    }
+}
 
 // Create particle effect
 function createParticles(x, y, color, count = 10) {
@@ -1383,6 +1493,7 @@ const levelConfigs = {
             {x: 1600, y: 590, type: 'greenFish'}
         ],
         boss: {x: 2200, y: 300, type: 'angryBird', health: 5, name: 'Sky Guardian'},
+        door: {x: 2400, y: 480}, // Exit door on the boss platform (y: 544 - 64 = 480)
         water: [
             // One continuous water body spanning the entire level bottom
             {x: 0, y: 576, w: 2500, h: 400} // Continuous water under all platforms
@@ -1714,6 +1825,7 @@ function createLevel() {
     decorations = [];
     waterBodies = [];
     levelBoss = null;
+    levelDoor = null;
 
     // Get current level config (cycle through levels 1-11)
     const currentLevelConfig = levelConfigs[((level - 1) % 11) + 1];
@@ -1738,6 +1850,12 @@ function createLevel() {
     if (currentLevelConfig.boss) {
         const b = currentLevelConfig.boss;
         levelBoss = new Boss(b.x, b.y, b.type, b.health * enemyMultiplier, b.name);
+    }
+
+    // Create door if level has one
+    if (currentLevelConfig.door) {
+        const d = currentLevelConfig.door;
+        levelDoor = new Door(d.x, d.y);
     }
 
     // Add extra enemies for higher difficulty cycles
@@ -1931,10 +2049,9 @@ function handleCollisions() {
             const bossDefeated = levelBoss.takeDamage(1);
             if (bossDefeated) {
                 levelBoss = null;
-                // Trigger level completion after a brief delay
-                setTimeout(() => {
-                    nextLevel();
-                }, 1000);
+                // Boss is defeated, door will now unlock automatically
+                score += 500; // Bonus points for defeating boss
+                createParticles(levelBoss.x + levelBoss.width/2, levelBoss.y + levelBoss.height/2, '#FFD700', 25);
             }
         } else {
             // Take damage from boss
@@ -1943,7 +2060,17 @@ function handleCollisions() {
             player.vy = -6;
         }
     }
-    
+
+    // Player vs Door
+    if (levelDoor && checkCollision(player, levelDoor) && !levelDoor.locked) {
+        // Player reached unlocked door - victory!
+        // Already handled by door unlock which calls showVictoryMessage
+        if (!victoryMessage.show) {
+            // In case door unlocked but victory message didn't show yet
+            showVictoryMessage();
+        }
+    }
+
     // Player vs Water
     waterBodies.forEach(water => {
         if (checkCollision(player, water)) {
@@ -2218,6 +2345,37 @@ function drawGUI(ctx) {
         ctx.fillText('Jump on enemies to defeat them!', canvas.width/2, canvas.height - 15);
         ctx.textAlign = 'left';
     }
+
+    // Victory message display
+    if (victoryMessage.show) {
+        // Full screen overlay
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Victory text
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 48px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(victoryMessage.text, canvas.width/2, canvas.height/2 - 50);
+
+        // Subtitle
+        ctx.fillStyle = 'white';
+        ctx.font = '24px Arial';
+        ctx.fillText('Proceeding to next level...', canvas.width/2, canvas.height/2 + 20);
+
+        // Timer bar
+        const barWidth = 300;
+        const barHeight = 8;
+        const progress = 1 - (victoryMessage.timer / victoryMessage.duration);
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.fillRect(canvas.width/2 - barWidth/2, canvas.height/2 + 60, barWidth, barHeight);
+
+        ctx.fillStyle = '#FFD700';
+        ctx.fillRect(canvas.width/2 - barWidth/2, canvas.height/2 + 60, barWidth * progress, barHeight);
+
+        ctx.textAlign = 'left';
+    }
 }
 
 // Draw background
@@ -2271,6 +2429,10 @@ function gameLoop(currentTime) {
         if (levelBoss) {
             levelBoss.update(deltaTime);
         }
+        if (levelDoor) {
+            levelDoor.update(deltaTime);
+        }
+        updateVictoryMessage(deltaTime);
         items.forEach(item => item.update(deltaTime));
         decorations.forEach(decoration => decoration.update(deltaTime));
 
@@ -2305,6 +2467,9 @@ function gameLoop(currentTime) {
         enemies.forEach(enemy => enemy.draw(ctx));
         if (levelBoss) {
             levelBoss.draw(ctx);
+        }
+        if (levelDoor) {
+            levelDoor.draw(ctx);
         }
         particles.forEach(particle => particle.draw(ctx));
         player.draw(ctx);
