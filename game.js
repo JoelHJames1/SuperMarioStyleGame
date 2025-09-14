@@ -200,7 +200,8 @@ async function loadSprites() {
             brownBat: ['batflying1.png', 'batflying2.png', 'batflying3.png', 'batflying4.png'],
             purpleBat: ['purplebat1.png', 'purplebat2.png', 'purplebat3.png', 'purplebat4.png'],
             angryBird: ['angrybirdflying1.png', 'angrybirdflying2.png', 'angrybirdflying3.png', 'angrybirdflying4.png'],
-            greenBird: ['GreenBirdFlying0.png', 'GreenBirdFlying1.png', 'GreenBirdFlying2.png', 'GreenBirdFlying3.png']
+            greenBird: ['GreenBirdFlying0.png', 'GreenBirdFlying1.png', 'GreenBirdFlying2.png', 'GreenBirdFlying3.png'],
+            skyGuardian: ['angrybirdflying1.png', 'angrybirdflying2.png', 'angrybirdflying3.png', 'angrybirdflying4.png']
         },
         
         // Item sprites
@@ -332,13 +333,14 @@ async function loadSprites() {
     // Load enemy sprites
     const enemyFolders = {
         greenFish: 'GreenFish',
-        redDino: 'RedDino', 
+        redDino: 'RedDino',
         purpleDino: 'PurpleDino',
         yellowDino: 'YellowDino',
         brownBat: 'BrownBat',
         purpleBat: 'PurpleBat',
         angryBird: 'AngryBird',
-        greenBird: 'GreenBird'
+        greenBird: 'GreenBird',
+        skyGuardian: 'AngryBird'
     };
     
     Object.keys(enemyFolders).forEach(enemyType => {
@@ -761,7 +763,7 @@ class Enemy {
         this.animTimer = 0;
         this.patrolDistance = 100;
         this.startX = x;
-        this.isFlying = ['brownBat', 'purpleBat', 'angryBird', 'greenBird'].includes(type);
+        this.isFlying = ['brownBat', 'purpleBat', 'angryBird', 'greenBird', 'skyGuardian'].includes(type);
         this.isFish = ['greenFish', 'sidewayFish'].includes(type);
         this.waterBounds = null; // Will be set when fish is in water
         this.animDir = 1; // for ping-pong on walkers
@@ -848,7 +850,8 @@ class Enemy {
                     'brownBat': 100,      // Fast flapping
                     'purpleBat': 110,     // Slightly slower
                     'angryBird': 90,      // Very fast flapping
-                    'greenBird': 120      // Moderate flapping
+                    'greenBird': 120,     // Moderate flapping
+                    'skyGuardian': 85     // Boss - very fast intimidating flapping
                 };
                 animSpeed = flyingAnimSpeeds[this.type] || 110;
             }
@@ -995,13 +998,19 @@ class Boss extends Enemy {
         this.width = 48;
         this.height = 48;
         this.attackTimer = 0;
-        this.attackCooldown = 2000; // 2 seconds between attacks
+        this.attackCooldown = 3000; // 3 seconds between attacks
         this.aggroRange = 300;
         this.isAggro = false;
         this.originalSpeed = this.vx;
         this.patrolDistance = 200;
         this.hurtTimer = 0;
         this.hurtFlashDuration = 200;
+
+        // New attack state system
+        this.attackState = 'patrolling'; // patrolling, preparing, diving, returning
+        this.attackStateTimer = 0;
+        this.cruisingAltitude = y; // Remember original altitude
+        this.diveTarget = { x: 0, y: 0 };
     }
 
     update(deltaTime) {
@@ -1014,30 +1023,11 @@ class Boss extends Enemy {
             this.isAggro = true;
         }
 
+        // Boss attack state machine
         if (this.isAggro) {
-            // Move towards player when aggro, but stay above water level
-            const playerDirection = player.x > this.x ? 1 : -1;
-            const waterLevel = 576; // Y coordinate where water starts
-
-            // Only chase horizontally if player is not too deep in water
-            if (player.y < waterLevel + 50) {
-                this.vx = this.originalSpeed * 2 * playerDirection; // Faster when chasing
-            } else {
-                // Player is deep in water, hover above water instead
-                this.vx = this.originalSpeed * 0.5 * playerDirection; // Slower patrol
-
-                // Keep boss above water
-                if (this.y > waterLevel - 100) {
-                    this.vy = -2; // Float upward to stay above water
-                }
-            }
-
-            // Attack behavior
-            this.attackTimer -= deltaTime;
-            if (this.attackTimer <= 0 && distToPlayer < 100 && player.y < waterLevel + 20) {
-                this.performAttack();
-                this.attackTimer = this.attackCooldown;
-            }
+            this.updateAttackBehavior(deltaTime, distToPlayer);
+        } else {
+            this.updatePatrolling(deltaTime);
         }
 
         // Update hurt flash
@@ -1045,50 +1035,147 @@ class Boss extends Enemy {
             this.hurtTimer -= deltaTime;
         }
 
-        // Custom boss movement - override parent to prevent ground collision glitches
-        if (this.isFlying) {
-            // Flying boss movement with altitude maintenance
-            const time = Date.now() * 0.002;
-            const baseFloatSpeed = 0.3;
-            const floatAmplitude = 0.8; // Gentler floating for boss
+        // Update animation
+        this.updateAnimation(deltaTime);
 
-            // Sine wave floating motion
-            this.vy = Math.sin(time + this.x * 0.01) * floatAmplitude;
-
-            // Add some gentle up/down drift
-            if (this.floatOffset === undefined) {
-                this.floatOffset = Math.random() * Math.PI * 2;
-            }
-            this.vy += Math.sin(time * 0.5 + this.floatOffset) * baseFloatSpeed;
-
-            // Keep boss in air - stronger constraints to prevent ground collision
-            if (this.y < 150) this.vy = Math.max(this.vy, 1); // Don't go too high
-            if (this.y > 450) this.vy = Math.min(this.vy, -2); // Stay well above ground
-
-            // Update animation like other flying enemies
-            const arr = sprites.enemies[this.type];
-            if (arr && arr.length > 0) {
-                this.animTimer += deltaTime;
-                const animSpeed = 90; // Fast flapping for boss (same as angryBird)
-                if (this.animTimer > animSpeed) {
-                    this.animTimer = 0;
-                    this.animFrame = (this.animFrame + 1) % arr.length;
-                }
-            }
-
-            // Boss-specific patrol behavior for flying type
-            if (!this.isAggro && Math.abs(this.x - this.startX) > this.patrolDistance) {
-                this.vx *= -1;
-            }
-        } else {
-            // Ground boss - use parent update
-            super.update(deltaTime);
-            return; // Exit early for ground bosses
-        }
-
-        // Move boss
+        // Apply movement
         this.x += this.vx;
         this.y += this.vy;
+
+        // Boundary constraints - prevent flying away
+        if (this.x < this.startX - 400) this.x = this.startX - 400;
+        if (this.x > this.startX + 400) this.x = this.startX + 400;
+        if (this.y < 100) this.y = 100;
+        if (this.y > 500) this.y = 500;
+    }
+
+    updatePatrolling(deltaTime) {
+        // Gentle floating patrol when not in combat
+        const time = Date.now() * 0.001;
+        this.vx = Math.sin(time) * 1; // Slow horizontal drift
+        this.vy = Math.sin(time * 1.5) * 0.5; // Gentle vertical floating
+
+        // Keep near starting position
+        const distFromStart = Math.abs(this.x - this.startX);
+        if (distFromStart > this.patrolDistance) {
+            this.vx = this.startX > this.x ? 1 : -1;
+        }
+
+        // Stay at cruising altitude
+        if (Math.abs(this.y - this.cruisingAltitude) > 50) {
+            this.vy = this.cruisingAltitude > this.y ? 1 : -1;
+        }
+    }
+
+    updateAttackBehavior(deltaTime, distToPlayer) {
+        this.attackStateTimer += deltaTime;
+        this.attackTimer -= deltaTime;
+
+        switch (this.attackState) {
+            case 'patrolling':
+                // Circle around player, preparing for attack
+                this.circlePlayer(deltaTime);
+                if (this.attackTimer <= 0) {
+                    this.prepareAttack();
+                }
+                break;
+
+            case 'preparing':
+                // Hover above player, prepare to dive
+                this.hoverAbovePlayer(deltaTime);
+                if (this.attackStateTimer >= 1000) { // 1 second preparation
+                    this.startDive();
+                }
+                break;
+
+            case 'diving':
+                // Dive toward player
+                this.executeeDive(deltaTime);
+                if (this.attackStateTimer >= 800 || this.y >= player.y) { // 0.8 second dive or reached player level
+                    this.startReturn();
+                }
+                break;
+
+            case 'returning':
+                // Fly back to cruising altitude
+                this.returnToAltitude(deltaTime);
+                if (this.attackStateTimer >= 1500) { // 1.5 seconds to return
+                    this.attackState = 'patrolling';
+                    this.attackTimer = this.attackCooldown;
+                    this.attackStateTimer = 0;
+                }
+                break;
+        }
+    }
+
+    circlePlayer(deltaTime) {
+        // Move in a wide circle around the player
+        const targetX = player.x + Math.sin(Date.now() * 0.002) * 200;
+        const targetY = this.cruisingAltitude;
+
+        this.vx = (targetX - this.x) * 0.02;
+        this.vy = (targetY - this.y) * 0.02;
+    }
+
+    hoverAbovePlayer(deltaTime) {
+        // Position directly above player
+        const targetX = player.x;
+        const targetY = this.cruisingAltitude - 50;
+
+        this.vx = (targetX - this.x) * 0.03;
+        this.vy = (targetY - this.y) * 0.03;
+    }
+
+    prepareAttack() {
+        this.attackState = 'preparing';
+        this.attackStateTimer = 0;
+        this.diveTarget.x = player.x;
+        this.diveTarget.y = player.y + 50; // Aim slightly below player
+    }
+
+    startDive() {
+        this.attackState = 'diving';
+        this.attackStateTimer = 0;
+        // Create warning particles
+        createParticles(this.x + this.width/2, this.y + this.height/2, '#ff4444', 8);
+    }
+
+    executeeDive(deltaTime) {
+        // Fast dive toward the stored target position
+        const dx = this.diveTarget.x - this.x;
+        const dy = this.diveTarget.y - this.y;
+        const speed = 6;
+
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > 5) {
+            this.vx = (dx / distance) * speed;
+            this.vy = (dy / distance) * speed;
+        }
+    }
+
+    startReturn() {
+        this.attackState = 'returning';
+        this.attackStateTimer = 0;
+    }
+
+    returnToAltitude(deltaTime) {
+        // Fly back up to cruising altitude
+        const targetY = this.cruisingAltitude;
+        this.vx *= 0.95; // Reduce horizontal movement
+        this.vy = (targetY - this.y) * 0.05;
+    }
+
+    updateAnimation(deltaTime) {
+        const arr = sprites.enemies[this.type];
+        if (arr && arr.length > 0) {
+            this.animTimer += deltaTime;
+            // Faster flapping during attacks
+            const animSpeed = (this.attackState === 'diving') ? 60 : 90;
+            if (this.animTimer > animSpeed) {
+                this.animTimer = 0;
+                this.animFrame = (this.animFrame + 1) % arr.length;
+            }
+        }
     }
 
     performAttack() {
@@ -1116,6 +1203,10 @@ class Boss extends Enemy {
             score += 500; // Bonus points for boss
             audioManager.playEnemyKilled();
             createParticles(this.x + this.width/2, this.y + this.height/2, '#gold', 25);
+
+            // Remove invisible wall barrier to allow passage
+            removeInvisibleWall();
+
             return true; // Boss is dead
         }
         return false;
@@ -1424,6 +1515,17 @@ let particles = [];
 let decorations = [];
 let waterBodies = [];
 
+// Remove invisible wall barrier when boss is defeated
+function removeInvisibleWall() {
+    // Remove the invisible wall that was blocking passage
+    const currentLevel = levelConfigs[((level - 1) % 11) + 1];
+    if (currentLevel && currentLevel.invisibleWalls && currentLevel.invisibleWalls.length > 0) {
+        // Remove all invisible walls to allow passage
+        currentLevel.invisibleWalls = [];
+        console.log('Invisible wall removed - passage now open!');
+    }
+}
+
 // Show victory message like Mario
 function showVictoryMessage() {
     victoryMessage.show = true;
@@ -1482,7 +1584,7 @@ function initGame() {
     gameState = 'playing';
     audioManager.playBackgroundMusic();
     lastTime = performance.now();
-    gameLoop();
+    requestAnimationFrame(gameLoop);
 }
 
 // Level configurations
@@ -1534,11 +1636,15 @@ const levelConfigs = {
             {x: 1200, y: 590, type: 'greenFish'},
             {x: 1600, y: 590, type: 'greenFish'}
         ],
-        boss: {x: 2200, y: 300, type: 'angryBird', health: 5, name: 'Sky Guardian'},
+        boss: {x: 2200, y: 300, type: 'skyGuardian', health: 5, name: 'Sky Guardian'},
         door: {x: 2400, y: 480}, // Exit door on the boss platform (y: 544 - 64 = 480)
         water: [
-            // One continuous water body spanning the entire level bottom
-            {x: 0, y: 576, w: 2500, h: 400} // Continuous water under all platforms
+            // Continuous water body spanning the entire level bottom extending beyond door
+            {x: 0, y: 576, w: 3000, h: 400} // Extended water that flows underneath everything
+        ],
+        // Invisible collision walls that prevent world fall-off
+        invisibleWalls: [
+            {x: 2550, y: 0, w: 10, h: 576} // Invisible wall past door - prevents endless swimming until boss defeated
         ]
     },
     2: {
@@ -2090,10 +2196,14 @@ function handleCollisions() {
             player.vy = JUMP_FORCE / 2;
             const bossDefeated = levelBoss.takeDamage(1);
             if (bossDefeated) {
+                // Create particles before setting levelBoss to null
+                createParticles(levelBoss.x + levelBoss.width/2, levelBoss.y + levelBoss.height/2, '#FFD700', 25);
+
                 levelBoss = null;
                 // Boss is defeated, door will now unlock automatically
-                score += 500; // Bonus points for defeating boss
-                createParticles(levelBoss.x + levelBoss.width/2, levelBoss.y + levelBoss.height/2, '#FFD700', 25);
+                if (levelDoor) {
+                    levelDoor.unlock();
+                }
             }
         } else {
             // Take damage from boss
@@ -2123,6 +2233,25 @@ function handleCollisions() {
             }
         }
     });
+
+    // Player vs Invisible Walls (prevent world fall-off)
+    const currentLevel = levelConfigs[((level - 1) % 11) + 1];
+    if (currentLevel && currentLevel.invisibleWalls && currentLevel.invisibleWalls.length > 0) {
+        currentLevel.invisibleWalls.forEach(wall => {
+            if (checkCollision(player, wall)) {
+                // Push player back from the invisible wall
+                if (player.vx > 0) {
+                    // Moving right, hit wall
+                    player.x = wall.x - player.width;
+                    player.vx = 0;
+                } else if (player.vx < 0) {
+                    // Moving left, hit wall
+                    player.x = wall.x + wall.w;
+                    player.vx = 0;
+                }
+            }
+        });
+    }
     
     // Player vs Items
     items.forEach(item => {
@@ -2458,6 +2587,13 @@ function drawBackground(ctx) {
 let lastTime = 0;
 
 function gameLoop(currentTime) {
+    // Handle first frame or invalid currentTime
+    if (!currentTime || !lastTime) {
+        lastTime = currentTime || performance.now();
+        requestAnimationFrame(gameLoop);
+        return;
+    }
+
     const deltaTime = currentTime - lastTime;
     lastTime = currentTime;
     
